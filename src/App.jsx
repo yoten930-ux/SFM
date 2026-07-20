@@ -589,10 +589,9 @@ export default function ExpiryManager() {
       return {
         status: "expired",
         label: "已過期",
-        color: "text-red-700",
-        bg: "bg-red-100",
-        border: "border-red-400",
-        bgBar: "bg-red-700",
+        color: "text-red-600",
+        bg: "bg-red-50",
+        border: "border-red-200",
         days: Math.abs(diffDays),
       };
     } else if (diffDays <= 30) {
@@ -602,7 +601,6 @@ export default function ExpiryManager() {
         color: "text-red-600",
         bg: "bg-red-50",
         border: "border-red-200",
-        bgBar: "bg-red-500",
         days: diffDays,
       };
     } else if (diffDays <= 60) {
@@ -612,17 +610,6 @@ export default function ExpiryManager() {
         color: "text-orange-600",
         bg: "bg-orange-50",
         border: "border-orange-200",
-        bgBar: "bg-orange-500",
-        days: diffDays,
-      };
-    } else if (diffDays <= 90) {
-      return {
-        status: "notice",
-        label: "留意期限",
-        color: "text-yellow-700",
-        bg: "bg-yellow-50",
-        border: "border-yellow-300",
-        bgBar: "bg-[#FBD914]",
         days: diffDays,
       };
     } else {
@@ -632,42 +619,45 @@ export default function ExpiryManager() {
         color: "text-green-600",
         bg: "bg-green-50",
         border: "border-green-200",
-        bgBar: "bg-green-500",
         days: diffDays,
       };
     }
   };
 
-  // 強化的日期解析引擎：解決 Excel 序號誤差與字串問題
+  // 2. 智慧 Excel 日期解析引擎 (已修復 YYYYMMDD 純數字陷阱)
   const formatExcelDate = (val) => {
     if (!val) return "";
     
-    // 1. 如果是 JavaScript Date 物件
+    // a. 如果已經是 Date 物件
     if (val instanceof Date) {
-      const d = new Date(val);
-      if (isNaN(d.getTime())) return "";
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (isNaN(val.getTime())) return "";
+      return `${val.getFullYear()}-${String(val.getMonth() + 1).padStart(2, "0")}-${String(val.getDate()).padStart(2, "0")}`;
     }
     
-    // 2. 解決 Excel 序號天數 (例如 45482)
+    // b. 如果是數字
     if (typeof val === "number") {
-      // Excel epoch 基礎 (1900-01-01 -> 25569 = 1970-01-01)
+      // 修正：如果數字大於 10000000，代表它是 20261130 這種 YYYYMMDD 的純數字
+      if (val > 10000000) {
+        const strVal = String(val);
+        return `${strVal.substring(0, 4)}-${strVal.substring(4, 6)}-${strVal.substring(6, 8)}`;
+      }
+      
+      // 否則才是標準的 Excel 日期序號 (例如 45482)
       const date = new Date(Math.round((val - 25569) * 86400 * 1000));
-      // 修正時區偏移量，避免變成前一天晚上
       date.setMinutes(date.getMinutes() + date.getTimezoneOffset());
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
     }
     
-    // 3. 字串解析 (支援 2026/07/09, 2026.07.09, 20260709)
+    // c. 如果是字串
     let str = String(val).trim().replace(/[/.]/g, "-").replace(/[\u4e00-\u9fa5]/g, "");
-    
-    // YYYY-MM-DD 或 YYYY-M-D
     const match = str.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (match) return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
-    
-    // YYYYMMDD 連續數字
+    if (match) {
+      return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+    }
     const match8 = str.match(/^(\d{4})(\d{2})(\d{2})$/);
-    if (match8) return `${match8[1]}-${match8[2]}-${match8[3]}`;
+    if (match8) {
+      return `${match8[1]}-${match8[2]}-${match8[3]}`;
+    }
     
     return "";
   };
