@@ -195,7 +195,6 @@ export default function ExpiryManager() {
         setDb(firestoreDb);
         setUseLocalMode(false);
 
-        // 讀取該分店商品
         const unsubscribeProducts = firestoreDb
           .collection("stores")
           .doc(auth.store)
@@ -212,7 +211,6 @@ export default function ExpiryManager() {
             () => loadLocalData(auth.store)
           );
 
-        // 讀取該分店獨立地點與密碼設定
         const unsubscribeSettings = firestoreDb
           .collection("stores")
           .doc(auth.store)
@@ -383,20 +381,21 @@ export default function ExpiryManager() {
     setIsModalOpen(true);
   };
 
-  // 同步資料至 Google 試算表（Google Apps Script Web App）
+  // 🌟 核心同步函式：將單筆資料透過 fetch 送入 Google 試算表 (修正 CORS 並加入地點)
   const syncToGoogleSheets = (itemData) => {
     const payload = {
       itemName: itemData.name,
       expiryDate: itemData.expiryDate,
       store: auth.store || "未知分店",
       quantity: itemData.quantity,
+      location: itemData.location || "未指定", // <--- 在這裡加入了地點資料
     };
 
     fetch(GAS_WEB_APP_URL, {
       method: "POST",
       mode: "no-cors",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "text/plain;charset=utf-8",
       },
       body: JSON.stringify(payload),
     }).catch((err) => {
@@ -502,7 +501,7 @@ export default function ExpiryManager() {
       await batch.commit();
     }
 
-    // 同步到 Google 試算表
+    // 🌟 同步到 Google 試算表
     syncToGoogleSheets(dataToSave);
 
     showToast(editingId ? "修改成功" : "新增/整併成功", "success");
@@ -645,7 +644,6 @@ export default function ExpiryManager() {
     showToast("管理員密碼已更新");
   };
 
-  // 視覺化效期 4 色碼
   const getExpiryStatus = (expiryDate) => {
     const today = new Date(getTodayStr());
     const expDate = new Date(expiryDate);
@@ -690,7 +688,6 @@ export default function ExpiryManager() {
     }
   };
 
-  // 智慧 Excel 日期解析引擎
   const formatExcelDate = (val) => {
     if (!val) return "";
     if (val instanceof Date) {
@@ -720,16 +717,13 @@ export default function ExpiryManager() {
       .replace(/[/.]/g, "-")
       .replace(/[\u4e00-\u9fa5]/g, "");
     const match = str.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (match) {
+    if (match)
       return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(
         2,
         "0"
       )}`;
-    }
     const match8 = str.match(/^(\d{4})(\d{2})(\d{2})$/);
-    if (match8) {
-      return `${match8[1]}-${match8[2]}-${match8[3]}`;
-    }
+    if (match8) return `${match8[1]}-${match8[2]}-${match8[3]}`;
     return "";
   };
 
@@ -786,7 +780,6 @@ export default function ExpiryManager() {
               row["產品名稱"] ||
               "未命名"
           ).trim();
-
           let rawBarcode =
             row["貨號"] ||
             row["商品條碼"] ||
@@ -795,14 +788,11 @@ export default function ExpiryManager() {
             row["Barcode"] ||
             row["Item Code"];
           const barcode = rawBarcode ? String(rawBarcode).trim() : name;
-
           let category = "room_temp";
           if (String(row["溫層"] || row["分類"] || "").includes("冷凍"))
             category = "frozen";
-
           const localMatch = products.find((p) => p.barcode === barcode);
           if (localMatch) category = localMatch.category;
-
           const expiryRaw =
             row["有效期限"] ||
             row["到期日"] ||
@@ -884,13 +874,17 @@ export default function ExpiryManager() {
                 .doc(auth.store)
                 .collection("products")
                 .doc(id),
-              {
-                quantity: mergedExistingProducts[id].quantity,
-              }
+              { quantity: mergedExistingProducts[id].quantity }
             );
           }
           await batch.commit();
         }
+
+        // 🌟 新增：將匯入的 Excel 資料全部同步到 Google 試算表
+        newProducts.forEach((prod) => {
+          syncToGoogleSheets(prod);
+        });
+
         showToast(`成功處理並匯入 ${newProducts.length} 筆資料`, "success");
       } catch (error) {
         showToast("匯入失敗，請確認格式", "error");
@@ -993,7 +987,6 @@ export default function ExpiryManager() {
     currentPage * itemsPerPage
   );
 
-  // 先進先出 (FIFO) 智慧標籤邏輯：優先比效期，效期相同比進貨日
   const fifoIds = new Set();
   const barcodeToEarliest = {};
 
@@ -1003,7 +996,6 @@ export default function ExpiryManager() {
     );
     if (diff >= 0) {
       const currentEarliest = barcodeToEarliest[p.barcode];
-
       if (!currentEarliest) {
         barcodeToEarliest[p.barcode] = {
           id: p.id,
@@ -1013,7 +1005,6 @@ export default function ExpiryManager() {
       } else {
         const pExp = new Date(p.expiryDate).getTime();
         const currExp = new Date(currentEarliest.expiryDate).getTime();
-
         if (pExp < currExp) {
           barcodeToEarliest[p.barcode] = {
             id: p.id,
@@ -1072,17 +1063,15 @@ export default function ExpiryManager() {
         <button
           key={d}
           onClick={() => setSelectedCalendarDay(dateStr)}
-          className={`p-2 border rounded-xl flex flex-col items-center justify-start h-14 relative transition 
-            ${
-              isSelected
-                ? "ring-2 ring-[#0058a3] bg-blue-50"
-                : "bg-white hover:bg-gray-50 border-gray-200"
-            }
-            ${
-              dateStr === getTodayStr()
-                ? "border-[#FBD914] border-2 font-bold"
-                : ""
-            }`}
+          className={`p-2 border rounded-xl flex flex-col items-center justify-start h-14 relative transition ${
+            isSelected
+              ? "ring-2 ring-[#0058a3] bg-blue-50"
+              : "bg-white hover:bg-gray-50 border-gray-200"
+          } ${
+            dateStr === getTodayStr()
+              ? "border-[#FBD914] border-2 font-bold"
+              : ""
+          }`}
         >
           <span className="text-sm">{d}</span>
           {dayProducts.length > 0 && (
@@ -1578,6 +1567,7 @@ export default function ExpiryManager() {
           </div>
         )}
 
+        {}
         {loading || !auth.store ? (
           <div className="text-center py-20 text-gray-400 font-bold flex flex-col items-center justify-center">
             <Loader2 className="w-10 h-10 animate-spin mb-4 text-[#0058a3]" />{" "}
@@ -1889,6 +1879,7 @@ export default function ExpiryManager() {
         )}
       </main>
 
+      {}
       {isSettingsOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 border-t-8 border-[#0058a3] max-h-[90vh] overflow-y-auto">
@@ -1903,7 +1894,6 @@ export default function ExpiryManager() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-
             <h3 className="font-bold text-sm text-slate-700 mb-2 border-b pb-1">
               地點設定
             </h3>
@@ -1946,7 +1936,6 @@ export default function ExpiryManager() {
                 ))
               )}
             </div>
-
             <h3 className="font-bold text-sm text-slate-700 mb-2 border-b pb-1">
               安全設定
             </h3>
@@ -2099,6 +2088,7 @@ export default function ExpiryManager() {
         </div>
       )}
 
+      {}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex flex-col items-center justify-start pt-[8vh] p-4 overflow-y-auto">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl flex flex-col overflow-hidden mb-10 shrink-0 border border-gray-100">
@@ -2119,7 +2109,6 @@ export default function ExpiryManager() {
                 <X className="w-6 h-6" />
               </button>
             </div>
-
             <div className="p-5 flex-1 custom-scrollbar">
               <form
                 id="productForm"
@@ -2188,7 +2177,6 @@ export default function ExpiryManager() {
                     </div>
                   </div>
                 </div>
-
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="min-w-0 box-border">
                     <label className="block text-xs font-black mb-1.5 text-slate-700">
@@ -2224,7 +2212,6 @@ export default function ExpiryManager() {
                     </select>
                   </div>
                 </div>
-
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="min-w-0 box-border">
                     <label className="block text-xs font-black mb-1.5 text-slate-700">
@@ -2255,7 +2242,6 @@ export default function ExpiryManager() {
                     />
                   </div>
                 </div>
-
                 <div className="grid grid-cols-3 gap-3">
                   <div className="min-w-0 box-border">
                     <label className="block text-xs font-black mb-1.5 text-slate-700">
@@ -2295,7 +2281,7 @@ export default function ExpiryManager() {
                         onChange={handleInputChange}
                         disabled={auth.role !== "admin" && editingId}
                         className="w-3.5 h-3.5 accent-[#0058a3] rounded disabled:opacity-50"
-                      />
+                      />{" "}
                       第二提醒
                     </label>
                     {formData.hasSecondReminder ? (
@@ -2318,7 +2304,6 @@ export default function ExpiryManager() {
                 </div>
               </form>
             </div>
-
             <div className="p-4 bg-gray-50 flex gap-3 justify-end rounded-b-3xl border-t">
               <button
                 type="button"
