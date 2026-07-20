@@ -638,30 +638,37 @@ export default function ExpiryManager() {
     }
   };
 
+  // 強化的日期解析引擎：解決 Excel 序號誤差與字串問題
   const formatExcelDate = (val) => {
     if (!val) return "";
-    if (val instanceof Date)
-      return `${val.getFullYear()}-${String(val.getMonth() + 1).padStart(
-        2,
-        "0"
-      )}-${String(val.getDate()).padStart(2, "0")}`;
-    if (typeof val === "number") {
-      const date = new Date(Math.round((val - 25569) * 86400 * 1000));
-      date.setMinutes(date.getMinutes() + date.getTimezoneOffset());
-      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-        2,
-        "0"
-      )}-${String(date.getDate()).padStart(2, "0")}`;
+    
+    // 1. 如果是 JavaScript Date 物件
+    if (val instanceof Date) {
+      const d = new Date(val);
+      if (isNaN(d.getTime())) return "";
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     }
-    const str = String(val)
-      .replace(/[/.]/g, "-")
-      .replace(/[\u4e00-\u9fa5]/g, "");
+    
+    // 2. 解決 Excel 序號天數 (例如 45482)
+    if (typeof val === "number") {
+      // Excel epoch 基礎 (1900-01-01 -> 25569 = 1970-01-01)
+      const date = new Date(Math.round((val - 25569) * 86400 * 1000));
+      // 修正時區偏移量，避免變成前一天晚上
+      date.setMinutes(date.getMinutes() + date.getTimezoneOffset());
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    }
+    
+    // 3. 字串解析 (支援 2026/07/09, 2026.07.09, 20260709)
+    let str = String(val).trim().replace(/[/.]/g, "-").replace(/[\u4e00-\u9fa5]/g, "");
+    
+    // YYYY-MM-DD 或 YYYY-M-D
     const match = str.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (match)
-      return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(
-        2,
-        "0"
-      )}`;
+    if (match) return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+    
+    // YYYYMMDD 連續數字
+    const match8 = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (match8) return `${match8[1]}-${match8[2]}-${match8[3]}`;
+    
     return "";
   };
 
@@ -673,11 +680,20 @@ export default function ExpiryManager() {
     setIsImporting(true);
 
     let defaultReceiveDate = getTodayStr();
-    const filenameMatch = file.name.match(/(\d{4}-\d{2}-\d{2})|(\d{4})/);
+    // 智慧檔名解析：尋找如 0709, 07-09, 或 20260709
+    const filenameMatch = file.name.match(/(\d{4}-\d{2}-\d{2})|(?:\D|^)(\d{4})(?:\D|$)/);
     if (filenameMatch) {
-      if (filenameMatch[1]) defaultReceiveDate = filenameMatch[1];
-      else if (filenameMatch[2].length === 4 && file.name.includes("-")) {
-        // parse 07-09 to year-month-day logic if needed, fallback to today
+      if (filenameMatch[1]) {
+        defaultReceiveDate = filenameMatch[1]; // 如 2026-07-09
+      } else if (filenameMatch[2]) {
+        // 抓到四碼，推測為 MMDD
+        const month = filenameMatch[2].substring(0, 2);
+        const day = filenameMatch[2].substring(2, 4);
+        const currentYear = new Date().getFullYear();
+        if (parseInt(month) >= 1 && parseInt(month) <= 12 && parseInt(day) >= 1 && parseInt(day) <= 31) {
+          defaultReceiveDate = `${currentYear}-${month}-${day}`;
+          showToast(`已從檔名帶入進貨日期：${defaultReceiveDate}`);
+        }
       }
     }
 
@@ -691,45 +707,37 @@ export default function ExpiryManager() {
 
         const newProducts = [];
         for (const row of data) {
-          const rawQuantity = row["數量(最小單位)"] || row["數量"] || 1;
+          // 模糊辨識：處理不同系統匯出的欄位名稱
+          const rawQuantity = row["數量(最小單位)"] || row["數量"] || row["庫存"] || row["Qty"] || 1;
           const barcode = String(
-            row["貨號"] ||
-              row["商品條碼"] ||
-              row["條碼"] ||
-              Math.floor(1000000000000 + Math.random() * 9000000000000)
+            row["貨號"] || row["商品條碼"] || row["條碼"] || row["Barcode"] ||
+            Math.floor(1000000000000 + Math.random() * 9000000000000)
           );
 
           let category = "room_temp";
-          if (String(row["溫層"] || "").includes("冷凍")) category = "frozen";
+          if (String(row["溫層"] || row["分類"] || "").includes("冷凍")) category = "frozen";
 
           // 如果沒有溫層，嘗試從歷史主檔尋找
           const localMatch = products.find((p) => p.barcode === barcode);
           if (localMatch) category = localMatch.category;
 
+          const expiryRaw = row["有效期限"] || row["到期日"] || row["到期日期"] || row["效期"] || row["Expiry"];
+
           const product = {
             id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
             barcode: barcode,
-            name: String(row["商品名稱"] || row["品名"] || "未命名"),
+            name: String(row["商品名稱"] || row["品名"] || row["名稱"] || "未命名"),
             category: category,
-            location: String(
-              row["存放地點"] || row["地點"] || row["儲位"] || ""
-            ),
-            receiveDate:
-              formatExcelDate(row["進貨日"] || row["進貨日期"]) ||
-              defaultReceiveDate,
-            expiryDate: formatExcelDate(
-              row["有效期限"] || row["到期日"] || row["到期日期"]
-            ),
+            location: String(row["存放地點"] || row["地點"] || row["儲位"] || ""),
+            receiveDate: formatExcelDate(row["進貨日"] || row["進貨日期"]) || defaultReceiveDate,
+            expiryDate: formatExcelDate(expiryRaw),
             quantity: Number(rawQuantity),
-            reminderDays: Number(
-              row["提醒天數"] || (localMatch ? localMatch.reminderDays : 60)
-            ),
-            hasSecondReminder: localMatch
-              ? localMatch.hasSecondReminder
-              : false,
+            reminderDays: Number(row["提醒天數"] || (localMatch ? localMatch.reminderDays : 60)),
+            hasSecondReminder: localMatch ? localMatch.hasSecondReminder : false,
             reminderDays2: localMatch ? localMatch.reminderDays2 : 14,
             updatedAt: new Date().toISOString(),
           };
+          
           if (product.name && product.expiryDate) newProducts.push(product);
         }
 
@@ -751,26 +759,15 @@ export default function ExpiryManager() {
 
         if (useLocalMode) {
           setProducts(updatedProducts);
-          localStorage.setItem(
-            `expiry_products_${auth.store}`,
-            JSON.stringify(updatedProducts)
-          );
+          localStorage.setItem(`expiry_products_${auth.store}`, JSON.stringify(updatedProducts));
         } else if (db && auth.store) {
           const batch = db.batch();
           for (const prod of newProducts) {
-            // simplified for batch writing
-            batch.set(
-              db
-                .collection("stores")
-                .doc(auth.store)
-                .collection("products")
-                .doc(prod.id),
-              prod
-            );
+            batch.set(db.collection("stores").doc(auth.store).collection("products").doc(prod.id), prod);
           }
           await batch.commit();
         }
-        showToast(`成功匯入並整併資料`, "success");
+        showToast(`成功匯入並整併 ${newProducts.length} 筆資料`, "success");
       } catch (error) {
         showToast("匯入失敗，請確認格式", "error");
       } finally {
@@ -879,8 +876,7 @@ export default function ExpiryManager() {
     const diff = Math.ceil(
       (new Date(p.expiryDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24)
     );
-    if (diff > 0) {
-      // 只標記未過期的商品
+    if (diff >= 0) { // 修復：大於等於0 (含今天到期) 都能算是未過期標籤
       if (
         !barcodeToEarliest[p.barcode] ||
         new Date(p.expiryDate) < new Date(barcodeToEarliest[p.barcode].date)
@@ -1973,7 +1969,7 @@ export default function ExpiryManager() {
                         onChange={handleInputChange}
                         disabled={auth.role !== "admin" && editingId}
                         placeholder="輸入或掃描"
-                        className="w-full px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold bg-gray-50 focus:bg-white focus:border-[#0058a3] outline-none transition box-border disabled:opacity-50"
+                        className="w-full min-w-0 px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold bg-gray-50 focus:bg-white focus:border-[#0058a3] outline-none transition box-border disabled:opacity-50"
                       />
                       <button
                         type="button"
