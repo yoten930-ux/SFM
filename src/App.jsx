@@ -61,6 +61,10 @@ const firebaseConfig = {
   measurementId: "G-LFL5ZDV54C",
 };
 
+// Google Apps Script 收件網址 (用來串接 Google 試算表與自動推播)
+const GAS_WEB_APP_URL =
+  "https://script.google.com/macros/s/AKfycbzN9e5Oq11mW3ATcw1cam3U4Ih8PDpmIHnIlCk-x0I0kTCU77EmJgyLo1CK9Z2n-ei-4Q/exec";
+
 // 分店資訊與專屬彩虹配色
 const stores = ["內湖", "新莊", "新店", "小巨蛋", "青埔", "台中", "高雄"];
 const STORE_COLORS = [
@@ -379,6 +383,27 @@ export default function ExpiryManager() {
     setIsModalOpen(true);
   };
 
+  // 同步資料至 Google 試算表（Google Apps Script Web App）
+  const syncToGoogleSheets = (itemData) => {
+    const payload = {
+      itemName: itemData.name,
+      expiryDate: itemData.expiryDate,
+      store: auth.store || "未知分店",
+      quantity: itemData.quantity,
+    };
+
+    fetch(GAS_WEB_APP_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }).catch((err) => {
+      console.error("同步至試算表失敗:", err);
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     const dataToSave = {
@@ -476,6 +501,10 @@ export default function ExpiryManager() {
       }
       await batch.commit();
     }
+
+    // 同步到 Google 試算表
+    syncToGoogleSheets(dataToSave);
+
     showToast(editingId ? "修改成功" : "新增/整併成功", "success");
     closeModal();
   };
@@ -973,7 +1002,6 @@ export default function ExpiryManager() {
       (new Date(p.expiryDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24)
     );
     if (diff >= 0) {
-      // 包含當天到期的也能被標記為FIFO
       const currentEarliest = barcodeToEarliest[p.barcode];
 
       if (!currentEarliest) {
@@ -987,14 +1015,12 @@ export default function ExpiryManager() {
         const currExp = new Date(currentEarliest.expiryDate).getTime();
 
         if (pExp < currExp) {
-          // 1. 效期更早，絕對優先使用
           barcodeToEarliest[p.barcode] = {
             id: p.id,
             expiryDate: p.expiryDate,
             receiveDate: p.receiveDate,
           };
         } else if (pExp === currExp) {
-          // 2. 若效期完全相同，則比較進貨日 (越早進貨越先用)
           const pRec = new Date(p.receiveDate).getTime();
           const currRec = new Date(currentEarliest.receiveDate).getTime();
           if (pRec < currRec) {
