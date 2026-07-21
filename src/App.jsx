@@ -61,7 +61,7 @@ const firebaseConfig = {
   measurementId: "G-LFL5ZDV54C",
 };
 
-// Google Apps Script 收件網址 (用來串接 Google 試算表與自動推播)
+// Google Apps Script 收件網址
 const GAS_WEB_APP_URL =
   "https://script.google.com/macros/s/AKfycbzN9e5Oq11mW3ATcw1cam3U4Ih8PDpmIHnIlCk-x0I0kTCU77EmJgyLo1CK9Z2n-ei-4Q/exec";
 
@@ -90,14 +90,14 @@ export default function ExpiryManager() {
   // 權限與分店登入
   const [auth, setAuth] = useState({ store: null, role: null, password: "" });
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(true);
-  const [storePasswords, setStorePasswords] = useState({}); // 各店自訂密碼
+  const [storePasswords, setStorePasswords] = useState({});
 
   // UI 與過濾狀態
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortBy, setSortBy] = useState("name_group"); // 預設依名稱群組化
+  const [sortBy, setSortBy] = useState("name_group");
   const [sortOrder, setSortOrder] = useState("asc");
   const [filterCategory, setFilterCategory] = useState("all");
-  const [filterStatus, setFilterStatus] = useState("all"); // all, warning, expired
+  const [filterStatus, setFilterStatus] = useState("all");
   const [filterLocation, setFilterLocation] = useState("all");
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -113,14 +113,11 @@ export default function ExpiryManager() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
 
-  // 分頁狀態
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
 
-  // 批量操作
   const [selectedIds, setSelectedIds] = useState(new Set());
 
-  // 預設 60 天提醒
   const defaultForm = {
     barcode: "",
     name: "",
@@ -381,14 +378,13 @@ export default function ExpiryManager() {
     setIsModalOpen(true);
   };
 
-  // 🌟 核心同步函式：將單筆資料透過 fetch 送入 Google 試算表 (修正 CORS 並加入地點)
   const syncToGoogleSheets = (itemData) => {
     const payload = {
       itemName: itemData.name,
       expiryDate: itemData.expiryDate,
       store: auth.store || "未知分店",
       quantity: itemData.quantity,
-      location: itemData.location || "未指定", // <--- 在這裡加入了地點資料
+      location: itemData.location || "未指定",
     };
 
     fetch(GAS_WEB_APP_URL, {
@@ -501,9 +497,7 @@ export default function ExpiryManager() {
       await batch.commit();
     }
 
-    // 🌟 同步到 Google 試算表
     syncToGoogleSheets(dataToSave);
-
     showToast(editingId ? "修改成功" : "新增/整併成功", "success");
     closeModal();
   };
@@ -765,6 +759,52 @@ export default function ExpiryManager() {
         const ws = wb.Sheets[wb.SheetNames[0]];
         const data = window.XLSX.utils.sheet_to_json(ws);
 
+        // 🌟 收集所有 Excel 中的貨號與名稱，準備去主資料庫查詢設定
+        const barcodesToFetch = [
+          ...new Set(
+            data.map((row) => {
+              const name = String(
+                row["商品名稱"] ||
+                  row["品名"] ||
+                  row["名稱"] ||
+                  row["產品名稱"] ||
+                  "未命名"
+              ).trim();
+              const rawBarcode =
+                row["貨號"] ||
+                row["商品條碼"] ||
+                row["條碼"] ||
+                row["國際條碼"] ||
+                row["Barcode"] ||
+                row["Item Code"];
+              return rawBarcode ? String(rawBarcode).trim() : name;
+            })
+          ),
+        ];
+
+        const localDict = {};
+        products.forEach((p) => {
+          localDict[p.barcode] = p;
+        });
+
+        const masterDict = {};
+        if (!useLocalMode && db) {
+          // 從 Firebase master_products 批次讀取歷史溫層與設定
+          const fetchPromises = barcodesToFetch.map(async (bc) => {
+            try {
+              const safeId = bc.replace(/\//g, "_");
+              const doc = await db
+                .collection("master_products")
+                .doc(safeId)
+                .get();
+              if (doc.exists) {
+                masterDict[bc] = doc.data();
+              }
+            } catch (e) {}
+          });
+          await Promise.all(fetchPromises);
+        }
+
         const newProducts = [];
         for (const row of data) {
           const rawQuantity =
@@ -788,11 +828,34 @@ export default function ExpiryManager() {
             row["Barcode"] ||
             row["Item Code"];
           const barcode = rawBarcode ? String(rawBarcode).trim() : name;
+
           let category = "room_temp";
           if (String(row["溫層"] || row["分類"] || "").includes("冷凍"))
             category = "frozen";
-          const localMatch = products.find((p) => p.barcode === barcode);
-          if (localMatch) category = localMatch.category;
+
+          // 🌟 自動套用歷史設定 (雲端優先，然後本地)
+          let matchSetting = masterDict[barcode] || localDict[barcode];
+          let reminderDays = 60;
+          let hasSecondReminder = false;
+          let reminderDays2 = 14;
+
+          if (matchSetting) {
+            category = matchSetting.category || category;
+            reminderDays = matchSetting.reminderDays || 60;
+            hasSecondReminder = matchSetting.hasSecondReminder || false;
+            reminderDays2 = matchSetting.reminderDays2 || 14;
+          }
+
+          // 如果同一個檔案內有重複的，也把剛查到的設定存回 localDict 讓後面同貨號的行也能用
+          if (!localDict[barcode]) {
+            localDict[barcode] = {
+              category,
+              reminderDays,
+              hasSecondReminder,
+              reminderDays2,
+            };
+          }
+
           const expiryRaw =
             row["有效期限"] ||
             row["到期日"] ||
@@ -813,13 +876,9 @@ export default function ExpiryManager() {
               defaultReceiveDate,
             expiryDate: formatExcelDate(expiryRaw),
             quantity: Number(rawQuantity),
-            reminderDays: Number(
-              row["提醒天數"] || (localMatch ? localMatch.reminderDays : 60)
-            ),
-            hasSecondReminder: localMatch
-              ? localMatch.hasSecondReminder
-              : false,
-            reminderDays2: localMatch ? localMatch.reminderDays2 : 14,
+            reminderDays: Number(row["提醒天數"] || reminderDays),
+            hasSecondReminder: hasSecondReminder,
+            reminderDays2: reminderDays2,
             updatedAt: new Date().toISOString(),
           };
 
@@ -880,10 +939,7 @@ export default function ExpiryManager() {
           await batch.commit();
         }
 
-        // 🌟 新增：將匯入的 Excel 資料全部同步到 Google 試算表
-        newProducts.forEach((prod) => {
-          syncToGoogleSheets(prod);
-        });
+        newProducts.forEach((prod) => syncToGoogleSheets(prod));
 
         showToast(`成功處理並匯入 ${newProducts.length} 筆資料`, "success");
       } catch (error) {
@@ -942,44 +998,44 @@ export default function ExpiryManager() {
     return true;
   });
 
-  let displayList = [];
-  if (sortBy === "name_group") {
-    const groups = {};
-    filteredProducts.forEach((p) => {
-      const key = `${String(p.barcode).trim()}_${String(p.name).trim()}`;
-      if (!groups[key])
-        groups[key] = {
-          key,
-          name: p.name,
-          barcode: p.barcode,
-          category: p.category,
-          totalQuantity: 0,
-          batches: [],
-        };
-      groups[key].totalQuantity += p.quantity;
-      groups[key].batches.push(p);
-    });
+  // 永遠將商品進行群組化 (依據 條碼_名稱)
+  const groups = {};
+  filteredProducts.forEach((p) => {
+    const key = `${String(p.barcode).trim()}_${String(p.name).trim()}`;
+    if (!groups[key]) {
+      groups[key] = {
+        key,
+        name: p.name,
+        barcode: p.barcode,
+        category: p.category,
+        totalQuantity: 0,
+        earliestExpiry: null,
+        batches: [],
+      };
+    }
+    groups[key].totalQuantity += p.quantity;
+    groups[key].batches.push(p);
+  });
 
-    Object.values(groups).forEach((g) => {
-      g.batches.sort((a, b) => {
-        const expDiff = new Date(a.expiryDate) - new Date(b.expiryDate);
-        return expDiff !== 0
-          ? expDiff
-          : new Date(a.receiveDate) - new Date(b.receiveDate);
-      });
-      displayList.push(g);
-    });
-    displayList.sort((a, b) => a.name.localeCompare(b.name, "zh-TW"));
-  } else {
-    displayList = [...filteredProducts];
-    displayList.sort((a, b) => {
-      let result = 0;
-      if (sortBy === "expiry")
-        result = new Date(a.expiryDate) - new Date(b.expiryDate);
-      else if (sortBy === "quantity") result = a.quantity - b.quantity;
-      return sortOrder === "asc" ? result : -result;
-    });
-  }
+  // 轉換為陣列，並將群組內的批次永遠「依效期由近到遠」排序
+  let displayList = Object.values(groups).map((g) => {
+    g.batches.sort((a, b) => new Date(a.expiryDate) - new Date(b.expiryDate));
+    g.earliestExpiry = new Date(g.batches[0].expiryDate).getTime();
+    return g;
+  });
+
+  // 根據選擇的排序條件 (名稱/效期/數量) 對「群組」進行整體排序
+  displayList.sort((a, b) => {
+    let result = 0;
+    if (sortBy === "expiry") {
+      result = a.earliestExpiry - b.earliestExpiry;
+    } else if (sortBy === "quantity") {
+      result = a.totalQuantity - b.totalQuantity;
+    } else {
+      result = a.name.localeCompare(b.name, "zh-TW");
+    }
+    return sortOrder === "asc" ? result : -result;
+  });
 
   const totalPages = Math.ceil(displayList.length / itemsPerPage);
   const paginatedList = displayList.slice(
@@ -989,7 +1045,6 @@ export default function ExpiryManager() {
 
   const fifoIds = new Set();
   const barcodeToEarliest = {};
-
   products.forEach((p) => {
     const diff = Math.ceil(
       (new Date(p.expiryDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24)
@@ -1027,10 +1082,10 @@ export default function ExpiryManager() {
   });
   Object.values(barcodeToEarliest).forEach((item) => fifoIds.add(item.id));
 
-  const currentDisplayIds =
-    sortBy === "name_group"
-      ? paginatedList.flatMap((g) => g.batches.map((b) => b.id))
-      : paginatedList.map((p) => p.id);
+  // 用於全選刪除的 ID 列表 (當前頁面所有批次)
+  const currentDisplayIds = paginatedList.flatMap((g) =>
+    g.batches.map((b) => b.id)
+  );
 
   const renderCalendar = () => {
     const year = calendarDate.getFullYear();
@@ -1130,7 +1185,6 @@ export default function ExpiryManager() {
             <h1 className="text-2xl font-black text-[#0058a3] tracking-wider mb-2">
               向即期品說再見
             </h1>
-
             {!auth.store ? (
               <>
                 <p className="text-sm text-gray-500 font-medium mb-6">
@@ -1194,6 +1248,7 @@ export default function ExpiryManager() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans pb-24 relative overflow-x-hidden">
+      {/* Toast */}
       {toastMessage && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[9999] bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 animate-in slide-in-from-top-5">
           {toastMessage.type === "error" ? (
@@ -1207,6 +1262,7 @@ export default function ExpiryManager() {
         </div>
       )}
 
+      {/* Confirm Dialog */}
       {confirmDialog && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl border-t-8 border-[#0058a3]">
@@ -1237,6 +1293,7 @@ export default function ExpiryManager() {
         </div>
       )}
 
+      {/* Scanner Modal */}
       {isScannerOpen && (
         <div className="fixed inset-0 z-[999] bg-black flex flex-col items-center justify-center">
           <div className="absolute top-6 right-6 z-10">
@@ -1257,6 +1314,7 @@ export default function ExpiryManager() {
         </div>
       )}
 
+      {/* Header */}
       <header className="bg-[#0058a3] shadow-md sticky top-0 z-30 border-b-[6px] border-[#FBD914] relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3"></div>
         <div className="max-w-3xl mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-4 relative z-10">
@@ -1309,7 +1367,6 @@ export default function ExpiryManager() {
               </div>
             </div>
           </div>
-
           <div className="flex gap-2 w-full sm:w-auto justify-between sm:justify-end">
             <button
               onClick={() => setIsCalendarOpen(true)}
@@ -1366,6 +1423,7 @@ export default function ExpiryManager() {
         </div>
       </header>
 
+      {/* Filters & Content */}
       <main className="max-w-3xl mx-auto px-4 py-6">
         <div className="grid grid-cols-3 gap-3 mb-5">
           <div
@@ -1474,7 +1532,6 @@ export default function ExpiryManager() {
               <Snowflake className="w-4 h-4" /> 冷凍
             </button>
           </div>
-
           <div className="flex gap-2 flex-col sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
@@ -1516,24 +1573,22 @@ export default function ExpiryManager() {
                 onChange={(e) => setSortBy(e.target.value)}
                 className="px-3 py-3 bg-white border-2 border-gray-200 rounded-xl text-sm font-bold text-slate-600 outline-none"
               >
-                <option value="name_group">依名稱分組</option>
+                <option value="name_group">依名稱</option>
                 <option value="expiry">依到期日</option>
                 <option value="quantity">依數量</option>
               </select>
-              {sortBy !== "name_group" && (
-                <button
-                  onClick={() =>
-                    setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))
-                  }
-                  className="px-3 bg-white border-2 border-gray-200 rounded-xl text-gray-500 hover:bg-gray-50 transition flex items-center justify-center"
-                >
-                  <ArrowUpDown
-                    className={`w-5 h-5 transition-transform ${
-                      sortOrder === "desc" ? "rotate-180" : ""
-                    }`}
-                  />
-                </button>
-              )}
+              <button
+                onClick={() =>
+                  setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))
+                }
+                className="px-3 bg-white border-2 border-gray-200 rounded-xl text-gray-500 hover:bg-gray-50 transition flex items-center justify-center"
+              >
+                <ArrowUpDown
+                  className={`w-5 h-5 transition-transform ${
+                    sortOrder === "desc" ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
             </div>
           </div>
         </div>
@@ -1553,7 +1608,7 @@ export default function ExpiryManager() {
               全選本頁 (
               {selectedIds.size > 0
                 ? `已選 ${selectedIds.size}`
-                : `共 ${displayList.length} 筆`}
+                : `共 ${displayList.length} 組`}
               )
             </label>
             {selectedIds.size > 0 && (
@@ -1567,7 +1622,7 @@ export default function ExpiryManager() {
           </div>
         )}
 
-        {}
+        {/* 統一的群組渲染清單 */}
         {loading || !auth.store ? (
           <div className="text-center py-20 text-gray-400 font-bold flex flex-col items-center justify-center">
             <Loader2 className="w-10 h-10 animate-spin mb-4 text-[#0058a3]" />{" "}
@@ -1606,153 +1661,62 @@ export default function ExpiryManager() {
           </div>
         ) : (
           <div className="space-y-5">
-            {paginatedList.map((item, index) => {
-              if (sortBy === "name_group") {
-                const group = item;
-                return (
-                  <div
-                    key={group.key}
-                    className="bg-white rounded-2xl shadow-sm border-2 border-gray-200 overflow-hidden relative"
-                  >
-                    <div className="bg-slate-50 p-4 border-b flex justify-between items-center">
-                      <div className="flex-1">
-                        <h3 className="font-black text-slate-800 text-lg leading-tight flex items-center gap-2">
-                          <Package className="w-5 h-5 text-gray-400" />{" "}
-                          {group.name}
-                        </h3>
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <span
-                            className={`text-[10px] px-2 py-0.5 rounded font-black tracking-widest ${
-                              group.category === "frozen"
-                                ? "bg-[#0058a3]/10 text-[#0058a3]"
-                                : "bg-orange-100 text-orange-700"
-                            }`}
-                          >
-                            {group.category === "frozen" ? "冷凍" : "常溫"}
-                          </span>
-                          <div className="text-xs text-slate-500 font-mono">
-                            <Barcode className="w-3.5 h-3.5 inline mr-1" />
-                            {group.barcode}
-                          </div>
-                        </div>
+            {paginatedList.map((group) => (
+              <div
+                key={group.key}
+                className="bg-white rounded-2xl shadow-sm border-2 border-gray-200 overflow-hidden relative"
+              >
+                <div className="bg-slate-50 p-4 border-b flex justify-between items-center">
+                  <div className="flex-1">
+                    <h3 className="font-black text-slate-800 text-lg leading-tight flex items-center gap-2">
+                      <Package className="w-5 h-5 text-gray-400" /> {group.name}
+                    </h3>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded font-black tracking-widest ${
+                          group.category === "frozen"
+                            ? "bg-[#0058a3]/10 text-[#0058a3]"
+                            : "bg-orange-100 text-orange-700"
+                        }`}
+                      >
+                        {group.category === "frozen" ? "冷凍" : "常溫"}
+                      </span>
+                      <div className="text-xs text-slate-500 font-mono">
+                        <Barcode className="w-3.5 h-3.5 inline mr-1" />
+                        {group.barcode}
                       </div>
-                      <div className="text-right">
-                        <span className="text-xs text-gray-500 font-bold">
-                          總數量
-                        </span>
-                        <div className="text-2xl font-black text-[#0058a3]">
-                          {group.totalQuantity}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="p-3 bg-white space-y-3">
-                      {group.batches.map((product) => {
-                        const status = getExpiryStatus(product.expiryDate);
-                        const isFIFO = fifoIds.has(product.id);
-                        return (
-                          <div
-                            key={product.id}
-                            className={`flex flex-col sm:flex-row sm:items-center justify-between p-3 rounded-xl border-2 relative transition ${
-                              isFIFO
-                                ? "border-[#0058a3] bg-blue-50/30"
-                                : status.border
-                            }`}
-                          >
-                            {isFIFO && (
-                              <div className="absolute -top-3 -right-2 z-[10]">
-                                <span className="bg-[#0058a3] text-[#FBD914] text-[10px] font-black px-2.5 py-1 rounded-full shadow-md animate-pulse border-2 border-white flex items-center gap-1 tracking-widest">
-                                  🏷️ 請先使用此批
-                                </span>
-                              </div>
-                            )}
-                            <div className="flex items-center gap-3 flex-1 mb-3 sm:mb-0">
-                              {auth.role === "admin" && (
-                                <input
-                                  type="checkbox"
-                                  checked={selectedIds.has(product.id)}
-                                  onChange={() => {
-                                    const next = new Set(selectedIds);
-                                    if (next.has(product.id))
-                                      next.delete(product.id);
-                                    else next.add(product.id);
-                                    setSelectedIds(next);
-                                  }}
-                                  className="w-4 h-4 accent-[#0058a3] rounded"
-                                />
-                              )}
-                              <div className="flex flex-col gap-1">
-                                <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
-                                  <MapPin className="w-4 h-4 text-[#0058a3]" />{" "}
-                                  {product.location || "未指定"}{" "}
-                                  <span className="text-gray-300">|</span> 數量:{" "}
-                                  {product.quantity}
-                                </div>
-                                <div className="text-xs text-gray-500 flex gap-2">
-                                  <span>進: {product.receiveDate}</span>{" "}
-                                  <span className="font-bold text-slate-700">
-                                    期: {product.expiryDate}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto">
-                              <div
-                                className={`px-3 py-1.5 rounded-lg ${status.bg} ${status.color} font-black text-xs flex flex-col items-center justify-center min-w-[70px] shadow-sm`}
-                              >
-                                <span>{status.label}</span>
-                                <span>
-                                  {status.status === "expired"
-                                    ? `超${status.days}天`
-                                    : `剩${status.days}天`}
-                                </span>
-                              </div>
-                              <div className="flex gap-1.5">
-                                <button
-                                  onClick={() => handleEdit(product)}
-                                  className="p-2 text-[#0058a3] bg-blue-50 hover:bg-blue-100 rounded-lg transition"
-                                >
-                                  <Edit2 className="w-4 h-4" />
-                                </button>
-                                {auth.role === "admin" && (
-                                  <button
-                                    onClick={() => handleDelete(product.id)}
-                                    className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
                     </div>
                   </div>
-                );
-              } else {
-                const product = item;
-                const status = getExpiryStatus(product.expiryDate);
-                const isFIFO = fifoIds.has(product.id);
-                return (
-                  <div
-                    key={product.id}
-                    className={`bg-white rounded-2xl p-4 shadow-sm border-2 ${
-                      isFIFO ? "border-[#0058a3]" : status.border
-                    } relative flex flex-col sm:flex-row gap-4 transition hover:shadow-md`}
-                  >
-                    {isFIFO && (
-                      <div className="absolute -top-3 -right-2 z-[10]">
-                        <span className="bg-[#0058a3] text-[#FBD914] text-xs font-black px-3 py-1.5 rounded-full shadow-lg animate-pulse border-2 border-white flex items-center gap-1 tracking-widest">
-                          🏷️ 請先使用此批
-                        </span>
-                      </div>
-                    )}
-                    <div
-                      className={`absolute left-0 top-0 bottom-0 w-2.5 rounded-l-2xl ${status.bgBar}`}
-                    />
-                    <div className="flex-1 pl-3">
-                      <div className="flex items-start justify-between mb-2 gap-2">
-                        <div className="flex items-center gap-2">
+                  <div className="text-right">
+                    <span className="text-xs text-gray-500 font-bold">
+                      總數量
+                    </span>
+                    <div className="text-2xl font-black text-[#0058a3]">
+                      {group.totalQuantity}
+                    </div>
+                  </div>
+                </div>
+                <div className="p-3 bg-white space-y-3">
+                  {group.batches.map((product) => {
+                    const status = getExpiryStatus(product.expiryDate);
+                    const isFIFO = fifoIds.has(product.id);
+                    return (
+                      <div
+                        key={product.id}
+                        className={`flex flex-col sm:flex-row sm:items-center justify-between p-3 rounded-xl border-2 relative transition ${
+                          isFIFO
+                            ? "border-[#0058a3] bg-blue-50/30"
+                            : status.border
+                        }`}
+                      >
+                        {isFIFO && (
+                          <div className="absolute -top-3 -right-2 z-[10]">
+                            <span className="bg-[#0058a3] text-[#FBD914] text-[10px] font-black px-2.5 py-1 rounded-full shadow-md animate-pulse border-2 border-white flex items-center gap-1 tracking-widest">
+                              🏷️ 請先使用此批
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-3 flex-1 mb-3 sm:mb-0">
                           {auth.role === "admin" && (
                             <input
                               type="checkbox"
@@ -1767,92 +1731,55 @@ export default function ExpiryManager() {
                               className="w-4 h-4 accent-[#0058a3] rounded"
                             />
                           )}
-                          <h3
-                            className={`font-black leading-tight ${
-                              isFIFO
-                                ? "text-[#0058a3] text-xl"
-                                : "text-slate-800 text-lg"
-                            }`}
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                              <MapPin className="w-4 h-4 text-[#0058a3]" />{" "}
+                              {product.location || "未指定"}{" "}
+                              <span className="text-gray-300">|</span> 數量:{" "}
+                              {product.quantity}
+                            </div>
+                            <div className="text-xs text-gray-500 flex gap-2">
+                              <span>進: {product.receiveDate}</span>{" "}
+                              <span className="font-bold text-slate-700">
+                                期: {product.expiryDate}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto">
+                          <div
+                            className={`px-3 py-1.5 rounded-lg ${status.bg} ${status.color} font-black text-xs flex flex-col items-center justify-center min-w-[70px] shadow-sm`}
                           >
-                            {product.name}
-                          </h3>
-                        </div>
-                        <span
-                          className={`text-[11px] px-2.5 py-1 rounded-md font-black tracking-widest flex-shrink-0 ${
-                            product.category === "frozen"
-                              ? "bg-[#0058a3]/10 text-[#0058a3]"
-                              : "bg-orange-100 text-orange-700"
-                          }`}
-                        >
-                          {product.category === "frozen" ? "冷凍" : "常溫"}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-slate-500 mb-4 font-mono bg-slate-100 inline-flex px-2.5 py-1 rounded-md border border-slate-200">
-                        <Barcode className="w-4 h-4" /> {product.barcode}
-                      </div>
-                      <div className="grid grid-cols-2 gap-y-3 text-sm text-slate-600 font-bold">
-                        <div className="flex items-center gap-2">
-                          <MapPin className="w-4 h-4 text-[#0058a3]" />{" "}
-                          {product.location || "未指定"}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Package className="w-4 h-4 text-[#0058a3]" /> 數量:{" "}
-                          <span className="text-lg text-slate-800">
-                            {product.quantity}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 col-span-2 text-xs bg-gray-50 p-2 rounded-lg border">
-                          <CalendarDays className="w-4 h-4 text-gray-400" />
-                          <span>進貨: {product.receiveDate}</span>
-                          <span className="text-gray-300 mx-1">|</span>
-                          <span>
-                            到期:{" "}
-                            <strong className="text-slate-800 text-sm">
-                              {product.expiryDate}
-                            </strong>
-                          </span>
+                            <span>{status.label}</span>
+                            <span>
+                              {status.status === "expired"
+                                ? `超${status.days}天`
+                                : `剩${status.days}天`}
+                            </span>
+                          </div>
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => handleEdit(product)}
+                              className="p-2 text-[#0058a3] bg-blue-50 hover:bg-blue-100 rounded-lg transition"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            {auth.role === "admin" && (
+                              <button
+                                onClick={() => handleDelete(product.id)}
+                                className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="flex sm:flex-col items-center justify-between sm:justify-end border-t sm:border-t-0 pt-4 sm:pt-0 sm:pl-4 sm:border-l border-gray-100">
-                      <div className="flex gap-2 sm:mb-4">
-                        <button
-                          onClick={() => handleEdit(product)}
-                          className="p-2.5 text-[#0058a3] bg-blue-50 hover:bg-blue-100 rounded-xl transition"
-                        >
-                          <Edit2 className="w-5 h-5" />
-                        </button>
-                        {auth.role === "admin" && (
-                          <button
-                            onClick={() => handleDelete(product.id)}
-                            className="p-2.5 text-red-600 bg-red-50 hover:bg-red-100 rounded-xl transition"
-                          >
-                            <Trash2 className="w-5 h-5" />
-                          </button>
-                        )}
-                      </div>
-                      <div
-                        className={`px-4 py-2 rounded-xl ${status.bg} ${status.color} font-black text-sm flex flex-col items-center gap-0.5 shadow-sm`}
-                      >
-                        <span className="flex items-center gap-1">
-                          {status.status === "expired" ? (
-                            <AlertTriangle className="w-4 h-4" />
-                          ) : (
-                            <Clock className="w-4 h-4" />
-                          )}{" "}
-                          {status.label}
-                        </span>
-                        <span className="text-xs opacity-90">
-                          {status.status === "expired"
-                            ? `超過 ${status.days} 天`
-                            : `剩 ${status.days} 天`}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
-            })}
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
@@ -1986,6 +1913,7 @@ export default function ExpiryManager() {
         </div>
       )}
 
+      {}
       {isCalendarOpen && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center p-4">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh]">
@@ -2099,7 +2027,7 @@ export default function ExpiryManager() {
             </div>
             <div className="flex justify-between items-center p-5 border-b bg-gray-50">
               <h2 className="font-black text-[#0058a3] flex items-center gap-2 text-xl tracking-wide">
-                <Package className="w-6 h-6 text-[#FBD914]" />
+                <Package className="w-6 h-6 text-[#FBD914]" />{" "}
                 {editingId ? "編輯商品" : "新增商品"}
               </h2>
               <button
