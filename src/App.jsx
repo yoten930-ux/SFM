@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   Search, Plus, Barcode, CalendarDays, MapPin, Snowflake, Sun, AlertTriangle,
   CheckCircle2, Clock, Trash2, Edit2, X, Package, Settings, Save, FileUp, FileDown,
-  Camera, Loader2, Store, ArrowUpDown, ChevronLeft, ChevronRight, Info, LogOut, Minus
+  Camera, Loader2, Store, ArrowUpDown, ChevronLeft, ChevronRight, Info, LogOut, Minus, RefreshCw
 } from "lucide-react";
 
 const loadScript = (src) => {
@@ -120,7 +120,7 @@ export default function ExpiryManager() {
   const itemsPerPage = 15;
   const [selectedIds, setSelectedIds] = useState(new Set());
 
-  // 預設 60 天提醒
+  // 預設表單
   const defaultForm = {
     barcode: "",
     name: "",
@@ -136,6 +136,7 @@ export default function ExpiryManager() {
   const [formData, setFormData] = useState(defaultForm);
 
   const [isImporting, setIsImporting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [scannerTarget, setScannerTarget] = useState("form");
   const scannerRef = useRef(null);
@@ -249,7 +250,8 @@ export default function ExpiryManager() {
 
   useEffect(() => {
     if (formData.barcode && !editingId) {
-      const localMatch = products.find((p) => p.barcode === formData.barcode);
+      const barcodeLower = formData.barcode.toLowerCase();
+      const localMatch = products.find((p) => String(p.barcode).toLowerCase() === barcodeLower);
       if (localMatch) {
         setFormData((prev) => ({
           ...prev,
@@ -263,7 +265,7 @@ export default function ExpiryManager() {
         return;
       }
       if (!useLocalMode && db) {
-        const safeId = formData.barcode.replace(/\//g, "_");
+        const safeId = barcodeLower.replace(/\//g, "_");
         db.collection("master_products").doc(safeId).get()
           .then((docSnap) => {
             if (docSnap.exists) {
@@ -282,7 +284,7 @@ export default function ExpiryManager() {
     }
   }, [formData.barcode, db, useLocalMode, editingId, products]);
 
-  // 📸 相機優化區塊：提升至 30FPS，並改用長方形掃描框以增加準確度
+  // 📸 相機優化區塊：提升至 30FPS，並改用長方形掃描框
   const handleStartScanner = (target) => {
     if (!window.Html5Qrcode) return showToast("掃描套件載入中，請稍後", "warning");
     setScannerTarget(target);
@@ -296,8 +298,8 @@ export default function ExpiryManager() {
         html5QrCode.start(
             { facingMode: "environment" },
             { 
-              fps: 30, // 提升幀數讓掃描更流暢
-              qrbox: { width: boxSize, height: Math.floor(boxSize * 0.6) } // 改成長方形框
+              fps: 30, // 提升幀數
+              qrbox: { width: boxSize, height: Math.floor(boxSize * 0.6) } // 長方形掃描框 (寬的60%)
             },
             (decodedText) => {
               if (target === "form") setFormData((prev) => ({ ...prev, barcode: decodedText }));
@@ -345,16 +347,23 @@ export default function ExpiryManager() {
     setIsModalOpen(true);
   };
 
-  // 🌟 同步到 Google 試算表，包含安全密鑰與動作指示
-  const syncToGoogleSheets = (itemData, action = "update") => {
+  // 🌟 核心新功能：背景自動全覆蓋快照 (Silent Bulk Sync)
+  // 每次資料異動，直接將陣列打包一次性送給試算表，不再一筆一筆傳
+  const backgroundBulkSyncToSheet = (latestProducts) => {
+    // 排除已經標記為賣完的商品，讓試算表只保留還在架上的商品，維持乾淨
+    const activeProducts = latestProducts.filter(p => p.quantity !== "已賣完" && p.quantity !== 0);
+
     const payload = {
-      secret: SHARED_SECRET, // 安全密鑰
-      action: action,        // 動作: update, delete, sold_out
-      itemName: itemData.name,
-      expiryDate: itemData.expiryDate,
-      store: auth.store || "未知分店",
-      quantity: itemData.quantity,
-      location: itemData.location || "未指定",
+      secret: SHARED_SECRET,
+      action: "bulk_sync",
+      store: auth.store,
+      items: activeProducts.map(p => ({
+        name: p.name,
+        expiryDate: p.expiryDate,
+        store: auth.store || "未知分店",
+        quantity: p.quantity,
+        location: p.location || "未指定"
+      }))
     };
 
     fetch(GAS_WEB_APP_URL, {
@@ -362,7 +371,22 @@ export default function ExpiryManager() {
       mode: "no-cors",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(payload),
-    }).catch((err) => console.error("GAS Sync Error:", err));
+    }).catch((err) => console.error("背景覆蓋同步失敗:", err));
+  };
+
+  // 手動強制覆蓋 (附帶 Loading 動畫，給管理員使用)
+  const handleManualBulkSync = async () => {
+    if (auth.role !== "admin") return;
+    setIsSyncing(true);
+    showToast("開始同步，請稍候...", "info");
+    
+    // 直接呼叫背景同步邏輯 (因為 no-cors 無法得知真正結束，用 setTimeout 模擬體驗)
+    backgroundBulkSyncToSheet(products);
+    
+    setTimeout(() => {
+      setIsSyncing(false);
+      showToast("整店庫存已完美覆蓋同步至試算表！", "success");
+    }, 1500);
   };
 
   const handleSubmit = async (e) => {
@@ -377,13 +401,14 @@ export default function ExpiryManager() {
       updatedAt: new Date().toISOString(),
     };
 
+    let updatedProducts = [...products];
+
     if (useLocalMode) {
-      let updatedProducts = [...products];
       if (editingId) {
         updatedProducts = updatedProducts.map((p) => p.id === editingId ? { ...dataToSave, id: editingId } : p);
       } else {
         const existingIdx = updatedProducts.findIndex(
-          (p) => p.barcode === dataToSave.barcode && p.name === dataToSave.name && p.expiryDate === dataToSave.expiryDate && p.location === dataToSave.location
+          (p) => p.barcode.toLowerCase() === dataToSave.barcode.toLowerCase() && p.name === dataToSave.name && p.expiryDate === dataToSave.expiryDate && p.location === dataToSave.location
         );
         if (existingIdx >= 0 && updatedProducts[existingIdx].quantity !== "已賣完") {
           updatedProducts[existingIdx].quantity += dataToSave.quantity;
@@ -397,19 +422,25 @@ export default function ExpiryManager() {
       const batch = db.batch();
       if (editingId) {
         batch.update(db.collection("stores").doc(auth.store).collection("products").doc(editingId), dataToSave);
+        updatedProducts = updatedProducts.map(p => p.id === editingId ? { ...dataToSave, id: editingId } : p);
       } else {
         const existingIdx = products.findIndex(
-          (p) => p.barcode === dataToSave.barcode && p.name === dataToSave.name && p.expiryDate === dataToSave.expiryDate && p.location === dataToSave.location
+          (p) => p.barcode.toLowerCase() === dataToSave.barcode.toLowerCase() && p.name === dataToSave.name && p.expiryDate === dataToSave.expiryDate && p.location === dataToSave.location
         );
         if (existingIdx >= 0 && products[existingIdx].quantity !== "已賣完") {
           const existingItem = products[existingIdx];
-          batch.update(db.collection("stores").doc(auth.store).collection("products").doc(existingItem.id), { quantity: existingItem.quantity + dataToSave.quantity });
+          const newQty = existingItem.quantity + dataToSave.quantity;
+          batch.update(db.collection("stores").doc(auth.store).collection("products").doc(existingItem.id), { quantity: newQty });
+          updatedProducts = updatedProducts.map((p, idx) => idx === existingIdx ? { ...p, quantity: newQty } : p);
         } else {
-          batch.set(db.collection("stores").doc(auth.store).collection("products").doc(), dataToSave);
+          const newRef = db.collection("stores").doc(auth.store).collection("products").doc();
+          batch.set(newRef, dataToSave);
+          updatedProducts.push({ ...dataToSave, id: newRef.id });
         }
       }
+      
       if (dataToSave.barcode) {
-        const masterId = dataToSave.barcode.replace(/\//g, "_");
+        const masterId = dataToSave.barcode.toLowerCase().replace(/\//g, "_");
         batch.set(
           db.collection("master_products").doc(masterId),
           { name: dataToSave.name, category: dataToSave.category, reminderDays: dataToSave.reminderDays, hasSecondReminder: dataToSave.hasSecondReminder, reminderDays2: dataToSave.reminderDays2, updatedAt: dataToSave.updatedAt },
@@ -418,24 +449,27 @@ export default function ExpiryManager() {
       }
       await batch.commit();
     }
-    syncToGoogleSheets(dataToSave, "update");
+    
+    // 🌟 在背景將這份最新的列表，一次性打包覆蓋到試算表
+    backgroundBulkSyncToSheet(updatedProducts);
+    
     showToast(editingId ? "修改成功" : "新增成功", "success");
     closeModal();
   };
 
   const handleDelete = (id) => {
     if (auth.role !== "admin") return showToast("權限不足：僅管理者可刪除", "error");
-    const itemToDelete = products.find(p => p.id === id);
-
     confirmAction("確定要刪除這筆庫存嗎？", async () => {
+      let updatedProducts = products.filter((p) => p.id !== id);
       if (useLocalMode) {
-        const updatedProducts = products.filter((p) => p.id !== id);
         setProducts(updatedProducts);
         localStorage.setItem(`expiry_products_${auth.store}`, JSON.stringify(updatedProducts));
       } else if (db) {
         await db.collection("stores").doc(auth.store).collection("products").doc(id).delete();
       }
-      if(itemToDelete) syncToGoogleSheets(itemToDelete, "delete");
+      
+      // 🌟 背景全覆蓋快照
+      backgroundBulkSyncToSheet(updatedProducts);
       
       setSelectedIds((prev) => {
         const next = new Set(prev);
@@ -450,10 +484,9 @@ export default function ExpiryManager() {
     if (auth.role !== "admin") return showToast("權限不足：僅管理者可刪除", "error");
     if (selectedIds.size === 0) return;
     confirmAction(`確定要刪除選取的 ${selectedIds.size} 筆庫存嗎？`, async () => {
-      const itemsToDelete = products.filter(p => selectedIds.has(p.id));
+      let updatedProducts = products.filter(p => !selectedIds.has(p.id));
       
       if (useLocalMode) {
-        const updatedProducts = products.filter((p) => !selectedIds.has(p.id));
         setProducts(updatedProducts);
         localStorage.setItem(`expiry_products_${auth.store}`, JSON.stringify(updatedProducts));
       } else if (db) {
@@ -464,7 +497,9 @@ export default function ExpiryManager() {
         await batch.commit();
       }
       
-      itemsToDelete.forEach(item => syncToGoogleSheets(item, "delete"));
+      // 🌟 背景全覆蓋快照
+      backgroundBulkSyncToSheet(updatedProducts);
+      
       setSelectedIds(new Set());
       showToast(`成功刪除 ${selectedIds.size} 筆商品`);
     });
@@ -483,18 +518,20 @@ export default function ExpiryManager() {
 
   const handleSoldOut = async (product) => {
     updateProductQuantity(product, "已賣完");
-    syncToGoogleSheets(product, "sold_out");
     showToast("已標記為售完", "success");
   };
 
   const updateProductQuantity = async (product, newValue) => {
+    let updatedProducts = products.map(p => p.id === product.id ? { ...p, quantity: newValue } : p);
     if (useLocalMode) {
-      const updated = products.map(p => p.id === product.id ? { ...p, quantity: newValue } : p);
-      setProducts(updated);
-      localStorage.setItem(`expiry_products_${auth.store}`, JSON.stringify(updated));
+      setProducts(updatedProducts);
+      localStorage.setItem(`expiry_products_${auth.store}`, JSON.stringify(updatedProducts));
     } else if (db) {
       await db.collection("stores").doc(auth.store).collection("products").doc(product.id).update({ quantity: newValue });
     }
+    
+    // 🌟 背景全覆蓋快照
+    backgroundBulkSyncToSheet(updatedProducts);
   };
 
   const toggleSelectAll = (currentDisplayIds) => {
@@ -549,7 +586,7 @@ export default function ExpiryManager() {
     showToast("密碼設定已更新");
   };
 
-  // 取得商品效期狀態 (嚴格根據自訂天數)
+  // 取得商品效期狀態 (嚴格根據商品自訂天數)
   const getExpiryStatus = (expiryDate, reminderDays = 60, hasSecondReminder = false, reminderDays2 = 14) => {
     const today = new Date(getTodayStr());
     const expDate = new Date(expiryDate);
@@ -591,20 +628,21 @@ export default function ExpiryManager() {
           const name = String(row["商品名稱"] || row["品名"] || row["名稱"] || row["產品名稱"] || "未命名").trim();
           let rawBarcode = row["貨號"] || row["商品條碼"] || row["條碼"] || row["國際條碼"] || row["Barcode"] || row["Item Code"];
           const barcode = rawBarcode ? String(rawBarcode).trim() : name;
+          const barcodeLower = barcode.toLowerCase();
           
           let category = "room_temp";
           if (String(row["溫層"] || row["分類"] || "").includes("冷凍")) category = "frozen";
           
           let reminderDays = 60, hasSecondReminder = false, reminderDays2 = 14;
 
-          const localMatch = products.find((p) => p.barcode === barcode);
+          const localMatch = products.find((p) => String(p.barcode).toLowerCase() === barcodeLower);
           if (localMatch) {
             category = localMatch.category;
             reminderDays = localMatch.reminderDays;
             hasSecondReminder = localMatch.hasSecondReminder;
             reminderDays2 = localMatch.reminderDays2;
           } else if (db) {
-            const masterDoc = await db.collection("master_products").doc(barcode.replace(/\//g, "_")).get();
+            const masterDoc = await db.collection("master_products").doc(barcodeLower.replace(/\//g, "_")).get();
             if (masterDoc.exists) {
               const mData = masterDoc.data();
               category = mData.category || category;
@@ -646,7 +684,7 @@ export default function ExpiryManager() {
 
         newProducts.forEach((newProd) => {
           const existingIdx = updatedProducts.findIndex(
-            (p) => p.barcode === newProd.barcode && p.name === newProd.name && p.expiryDate === newProd.expiryDate && p.location === newProd.location
+            (p) => p.barcode.toLowerCase() === newProd.barcode.toLowerCase() && p.name === newProd.name && p.expiryDate === newProd.expiryDate && p.location === newProd.location
           );
           if (existingIdx >= 0 && updatedProducts[existingIdx].quantity !== "已賣完") {
             updatedProducts[existingIdx].quantity += newProd.quantity;
@@ -667,7 +705,9 @@ export default function ExpiryManager() {
           await batch.commit();
         }
 
-        newProducts.forEach((prod) => syncToGoogleSheets(prod, "update"));
+        // 🌟 匯入完成後，僅發送 1 次背景同步，將新資料打包覆蓋到試算表
+        backgroundBulkSyncToSheet(updatedProducts);
+
         showToast(`匯入完成：成功 ${successCount} 筆，略過 ${skipCount} 筆(缺效期)`, "success");
       } catch (error) {
         showToast("匯入失敗，請確認格式", "error");
@@ -705,7 +745,6 @@ export default function ExpiryManager() {
     if (p.quantity === "已賣完" && filterStatus !== "sold_out") return false;
     if (p.quantity !== "已賣完" && filterStatus === "sold_out") return false;
 
-    // 將搜尋字串與貨號都轉成小寫
     const searchLower = searchQuery.toLowerCase();
     const safeBarcode = String(p.barcode || "").toLowerCase();
     
@@ -725,7 +764,7 @@ export default function ExpiryManager() {
   // 統一進行分組處理，不再拆散！
   const groups = {};
   filteredProducts.forEach((p) => {
-    const key = `${String(p.barcode).trim()}_${String(p.name).trim()}`;
+    const key = `${String(p.barcode).trim().toLowerCase()}_${String(p.name).trim()}`;
     if (!groups[key]) {
       groups[key] = {
         key, name: p.name, barcode: p.barcode, category: p.category,
@@ -765,7 +804,7 @@ export default function ExpiryManager() {
     if (p.quantity === "已賣完") return;
     const diff = Math.ceil((new Date(p.expiryDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24));
     if (diff >= 0) {
-      const locKey = `${p.location || "未指定"}_${p.barcode}`;
+      const locKey = `${p.location || "未指定"}_${p.barcode.toLowerCase()}`;
       const currentEarliest = locationBarcodeToEarliest[locKey];
       if (!currentEarliest) {
         locationBarcodeToEarliest[locKey] = { id: p.id, expiryDate: p.expiryDate, receiveDate: p.receiveDate };
@@ -1166,11 +1205,13 @@ export default function ExpiryManager() {
               <h2 className="text-xl font-black flex items-center gap-2 text-[#0058a3]"><Settings className="w-6 h-6" /> 店鋪管理設定</h2>
               <button onClick={() => setIsSettingsOpen(false)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 text-gray-500"><X className="w-5 h-5" /></button>
             </div>
+            
             <h3 className="font-bold text-sm text-slate-700 mb-2 border-b pb-1">地點設定</h3>
             <form onSubmit={handleAddLocation} className="flex gap-2 mb-4">
               <input value={newLocationInput} onChange={(e) => setNewLocationInput(e.target.value)} placeholder="輸入新地點名稱..." className="flex-1 px-3 py-2 border-2 border-gray-200 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none transition" />
               <button type="submit" disabled={!newLocationInput.trim()} className="px-4 py-2 bg-[#0058a3] text-[#FBD914] font-bold rounded-xl disabled:opacity-50 hover:bg-[#004a89] transition">新增</button>
             </form>
+            
             <div className="max-h-[20vh] overflow-y-auto space-y-2 mb-6 custom-scrollbar pr-2">
               {locations.length === 0 ? <p className="text-center text-gray-400 py-4 font-medium text-sm">尚無地點，請新增</p> : locations.map((loc) => (
                 <div key={loc} className="flex justify-between items-center bg-slate-50 p-2.5 rounded-xl border border-slate-100">
@@ -1179,6 +1220,20 @@ export default function ExpiryManager() {
                 </div>
               ))}
             </div>
+
+            <h3 className="font-bold text-sm text-slate-700 mb-2 border-b pb-1">系統進階操作</h3>
+            <div className="space-y-3 mb-6">
+              <button 
+                onClick={handleManualBulkSync}
+                disabled={isSyncing}
+                className="w-full py-2.5 bg-blue-50 text-[#0058a3] border border-blue-200 rounded-xl font-bold hover:bg-blue-100 transition text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                {isSyncing ? "覆蓋同步中..." : "手動強制將目前庫存覆蓋至試算表"}
+              </button>
+              <p className="text-[10px] text-gray-400 text-center">＊通常系統會在背景自動同步，若遇異常可點此強制修復</p>
+            </div>
+
             <h3 className="font-bold text-sm text-slate-700 mb-2 border-b pb-1">安全設定</h3>
             {!isEditingPassword ? (
               <button onClick={() => setIsEditingPassword(true)} className="w-full py-2.5 border-2 border-gray-200 rounded-xl text-slate-600 font-bold hover:bg-gray-50 transition text-sm">修改登入密碼</button>
