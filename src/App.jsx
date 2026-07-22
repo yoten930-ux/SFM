@@ -165,7 +165,6 @@ export default function ExpiryManager() {
     setProducts(localProducts);
     setLocations(localSettings.locations);
 
-    // 💡 修復讀取密碼問題：將 localStorage 中的密碼正確讀入 state 中
     if (localSettings.customPassword) {
       setStorePasswords((prev) => ({
         ...prev,
@@ -328,7 +327,6 @@ export default function ExpiryManager() {
     const expDate = new Date(expiryDate);
     const diffDays = Math.ceil((expDate - today) / (1000 * 60 * 60 * 24));
 
-    // 💡 隱性危險防護網：即使沒有勾選第二提醒，進入設定天數的一半內也會自動變紅
     const dangerThreshold = hasSecondReminder
       ? reminderDays2
       : Math.ceil(reminderDays / 2);
@@ -419,7 +417,6 @@ export default function ExpiryManager() {
         const html5QrCode = new window.Html5Qrcode("reader");
         scannerRef.current = html5QrCode;
         const boxWidth = Math.min(window.innerWidth - 40, 300);
-        // 💡 30FPS 與長方形掃描框：速度大幅提升
         const boxHeight = Math.floor(boxWidth * 0.6);
         html5QrCode
           .start(
@@ -488,7 +485,6 @@ export default function ExpiryManager() {
       updatedAt: new Date().toISOString(),
     };
 
-    // 如果數量為 0 或負數，自動判定為賣完
     if (dataToSave.quantity <= 0) {
       dataToSave.isSoldOut = true;
     } else {
@@ -513,7 +509,6 @@ export default function ExpiryManager() {
         );
         if (existingIdx >= 0) {
           updatedProducts[existingIdx].quantity += dataToSave.quantity;
-          // 💡 賣完復活：如果有新進貨數量，強制把 isSoldOut 改回 false
           updatedProducts[existingIdx].isSoldOut = false;
         } else {
           updatedProducts.push({ ...dataToSave, id: Date.now().toString() });
@@ -536,7 +531,6 @@ export default function ExpiryManager() {
             .doc(editingId),
           dataToSave
         );
-        // 💡 強化修復：Firestore 模式下也要同步更新本地變數，避免同步到 GAS 慢半拍
         updatedProducts = updatedProducts.map((p) =>
           p.id === editingId ? { ...dataToSave, id: editingId } : p
         );
@@ -559,20 +553,22 @@ export default function ExpiryManager() {
               .doc(products[existingIdx].id),
             {
               quantity: newQty,
-              isSoldOut: false, // 💡 賣完復活 (Firestore)
+              isSoldOut: false,
             }
           );
-          // 💡 強化修復：更新記憶體內的陣列，維持快照新鮮度
           updatedProducts[existingIdx] = {
             ...updatedProducts[existingIdx],
             quantity: newQty,
-            isSoldOut: false
+            isSoldOut: false,
           };
         } else {
-          const newDocRef = db.collection("stores").doc(auth.store).collection("products").doc();
-          batch.set(newDocRef, dataToSave);
-          // 💡 強化修復：將新資料塞入陣列
-          updatedProducts.push({ ...dataToSave, id: newDocRef.id });
+          const newRef = db
+            .collection("stores")
+            .doc(auth.store)
+            .collection("products")
+            .doc();
+          batch.set(newRef, dataToSave);
+          updatedProducts.push({ ...dataToSave, id: newRef.id });
         }
       }
       if (dataToSave.barcode) {
@@ -918,10 +914,11 @@ export default function ExpiryManager() {
               p.location === newProd.location
           );
           if (existingIdx >= 0) {
-            // 💡 改良：依據合併後的實際數量精準判定 isSoldOut
-            const mergedQty = (Number(updatedProducts[existingIdx].quantity) || 0) + newProd.quantity;
+            const mergedQty =
+              (Number(updatedProducts[existingIdx].quantity) || 0) +
+              (Number(newProd.quantity) || 0);
             updatedProducts[existingIdx].quantity = mergedQty;
-            updatedProducts[existingIdx].isSoldOut = mergedQty <= 0; 
+            updatedProducts[existingIdx].isSoldOut = mergedQty <= 0;
             mergedExistingProducts[updatedProducts[existingIdx].id] =
               updatedProducts[existingIdx];
           } else {
@@ -956,7 +953,7 @@ export default function ExpiryManager() {
                 .doc(id),
               {
                 quantity: mergedExistingProducts[id].quantity,
-                isSoldOut: mergedExistingProducts[id].isSoldOut, // 💡 同步將精準的布林值寫入 Firestore
+                isSoldOut: mergedExistingProducts[id].isSoldOut,
               }
             );
           await batch.commit();
@@ -978,7 +975,6 @@ export default function ExpiryManager() {
   };
 
   let filteredProducts = products.filter((p) => {
-    // 💡 防呆搜尋：強制將貨號與搜尋詞都轉換為小寫比對
     const q = searchQuery.toLowerCase().trim();
     const matchSearch =
       p.name.toLowerCase().includes(q) ||
@@ -1277,7 +1273,6 @@ export default function ExpiryManager() {
         </div>
       )}
 
-      {}
       <header className="bg-[#0058a3] shadow-md sticky top-0 z-30 border-b-[6px] border-[#FBD914] py-4 px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
         <div className="flex items-center gap-3 self-start sm:self-auto">
           <Package className="w-10 h-10 text-[#FBD914] drop-shadow-md" />
@@ -1301,7 +1296,7 @@ export default function ExpiryManager() {
         <div className="flex gap-2 w-full sm:w-auto justify-between sm:justify-end">
           <button
             onClick={() => setIsCalendarOpen(true)}
-            className="p-2.5 bg-white/10 text-white rounded-xl"
+            className="p-2.5 bg-white/10 text-white rounded-xl flex items-center justify-center"
           >
             <CalendarDays className="w-5 h-5" />
           </button>
@@ -1309,17 +1304,17 @@ export default function ExpiryManager() {
             <>
               <button
                 onClick={() => setIsSettingsOpen(true)}
-                className="p-2.5 bg-white/10 text-white rounded-xl"
+                className="p-2.5 bg-white/10 text-white rounded-xl flex items-center justify-center"
               >
                 <Settings className="w-5 h-5" />
               </button>
               <button
                 onClick={handleExcelExport}
-                className="p-2.5 bg-white/10 text-white rounded-xl"
+                className="p-2.5 bg-white/10 text-white rounded-xl flex items-center justify-center"
               >
                 <FileDown className="w-5 h-5" />
               </button>
-              <label className="p-2.5 bg-white/10 text-white rounded-xl cursor-pointer">
+              <label className="p-2.5 bg-white/10 text-white rounded-xl cursor-pointer flex items-center justify-center">
                 {isImporting ? (
                   <Loader2 className="w-5 h-5 animate-spin" />
                 ) : (
@@ -1347,7 +1342,6 @@ export default function ExpiryManager() {
         </div>
       </header>
 
-      {}
       <main className="max-w-3xl mx-auto px-4 py-6">
         <div
           className={`grid ${
@@ -1509,7 +1503,7 @@ export default function ExpiryManager() {
               />
               <button
                 onClick={() => handleStartScanner("search")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-blue-50 text-[#0058a3] rounded-lg"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-blue-50 text-[#0058a3] rounded-lg flex items-center justify-center"
               >
                 <Camera className="w-4 h-4" />
               </button>
@@ -1584,7 +1578,6 @@ export default function ExpiryManager() {
           </div>
         )}
 
-        {}
         {loading ? (
           <div className="text-center py-20 text-gray-400 font-bold">
             <Loader2 className="w-10 h-10 animate-spin mx-auto text-[#0058a3]" />{" "}
@@ -1723,14 +1716,14 @@ export default function ExpiryManager() {
                               <>
                                 <button
                                   onClick={() => handleQuantityMinus(product)}
-                                  className="p-2 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg flex items-center gap-1"
+                                  className="p-2 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg flex items-center gap-1 justify-center"
                                 >
                                   <Minus className="w-4 h-4" />
                                   <span className="text-xs font-bold">1</span>
                                 </button>
                                 <button
                                   onClick={() => handleMarkSoldOut(product)}
-                                  className="p-2 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-xs font-bold"
+                                  className="p-2 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-xs font-bold flex items-center justify-center"
                                 >
                                   賣完
                                 </button>
@@ -1738,14 +1731,14 @@ export default function ExpiryManager() {
                             )}
                             <button
                               onClick={() => handleEdit(product)}
-                              className="p-2 text-[#0058a3] bg-blue-50 hover:bg-blue-100 rounded-lg"
+                              className="p-2 text-[#0058a3] bg-blue-50 hover:bg-blue-100 rounded-lg flex items-center justify-center"
                             >
                               <Edit2 className="w-4 h-4" />
                             </button>
                             {auth.role === "admin" && (
                               <button
                                 onClick={() => handleDelete(product.id)}
-                                className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg"
+                                className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg flex items-center justify-center"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -1766,7 +1759,7 @@ export default function ExpiryManager() {
             <button
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               disabled={currentPage === 1}
-              className="p-2 bg-white border-2 border-gray-200 rounded-xl disabled:opacity-50"
+              className="p-2 bg-white border-2 border-gray-200 rounded-xl disabled:opacity-50 flex items-center justify-center"
             >
               <ChevronLeft className="w-6 h-6" />
             </button>
@@ -1776,7 +1769,7 @@ export default function ExpiryManager() {
             <button
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
-              className="p-2 bg-white border-2 border-gray-200 rounded-xl disabled:opacity-50"
+              className="p-2 bg-white border-2 border-gray-200 rounded-xl disabled:opacity-50 flex items-center justify-center"
             >
               <ChevronRight className="w-6 h-6" />
             </button>
@@ -1784,7 +1777,10 @@ export default function ExpiryManager() {
         )}
       </main>
 
-      {}
+      <footer className="w-full text-center py-6 text-slate-400 text-xs font-bold tracking-widest relative z-10">
+        &copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.
+      </footer>
+
       {isSettingsOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 border-t-8 border-[#0058a3] max-h-[90vh] overflow-y-auto">
@@ -1794,7 +1790,7 @@ export default function ExpiryManager() {
               </h2>
               <button
                 onClick={() => setIsSettingsOpen(false)}
-                className="p-2 bg-gray-100 rounded-full"
+                className="p-2 bg-gray-100 rounded-full flex items-center justify-center"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1851,7 +1847,7 @@ export default function ExpiryManager() {
                   showToast("新增成功");
                 }}
                 disabled={!newLocationInput.trim()}
-                className="px-4 py-2 bg-[#0058a3] text-[#FBD914] font-bold rounded-xl"
+                className="px-4 py-2 bg-[#0058a3] text-[#FBD914] font-bold rounded-xl flex items-center justify-center"
               >
                 新增
               </button>
@@ -1885,7 +1881,7 @@ export default function ExpiryManager() {
                             .set({ locations: updated }, { merge: true });
                       })
                     }
-                    className="p-1.5 text-red-400"
+                    className="p-1.5 text-red-400 flex items-center justify-center"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -1967,13 +1963,13 @@ export default function ExpiryManager() {
                       setIsEditingPassword(false);
                       showToast("密碼已更新");
                     }}
-                    className="flex-1 py-2 bg-orange-500 text-white font-bold rounded-xl text-sm"
+                    className="flex-1 py-2 bg-orange-500 text-white font-bold rounded-xl text-sm flex items-center justify-center"
                   >
                     確認更新
                   </button>
                   <button
                     onClick={() => setIsEditingPassword(false)}
-                    className="flex-1 py-2 bg-gray-200 text-gray-600 font-bold rounded-xl text-sm"
+                    className="flex-1 py-2 bg-gray-200 text-gray-600 font-bold rounded-xl text-sm flex items-center justify-center"
                   >
                     取消
                   </button>
@@ -1993,7 +1989,7 @@ export default function ExpiryManager() {
               </h2>
               <button
                 onClick={() => setIsCalendarOpen(false)}
-                className="p-2 hover:bg-white/20 rounded-full"
+                className="p-2 hover:bg-white/20 rounded-full flex items-center justify-center"
               >
                 <X className="w-6 h-6" />
               </button>
@@ -2010,7 +2006,7 @@ export default function ExpiryManager() {
                       )
                     )
                   }
-                  className="p-2 bg-gray-100 rounded-full"
+                  className="p-2 bg-gray-100 rounded-full flex items-center justify-center"
                 >
                   <ChevronLeft className="w-5 h-5" />
                 </button>
@@ -2028,7 +2024,7 @@ export default function ExpiryManager() {
                       )
                     )
                   }
-                  className="p-2 bg-gray-100 rounded-full"
+                  className="p-2 bg-gray-100 rounded-full flex items-center justify-center"
                 >
                   <ChevronRight className="w-5 h-5" />
                 </button>
@@ -2103,7 +2099,7 @@ export default function ExpiryManager() {
               </h2>
               <button
                 onClick={closeModal}
-                className="p-2 text-gray-400 hover:bg-gray-200 rounded-full"
+                className="p-2 text-gray-400 hover:bg-gray-200 rounded-full flex items-center justify-center"
               >
                 <X className="w-6 h-6" />
               </button>
@@ -2133,7 +2129,7 @@ export default function ExpiryManager() {
                         type="button"
                         onClick={() => handleStartScanner("form")}
                         disabled={auth.role !== "admin" && editingId}
-                        className="px-3 py-2 bg-blue-50 text-[#0058a3] rounded-xl border border-blue-200"
+                        className="px-3 py-2 bg-blue-50 text-[#0058a3] rounded-xl border border-blue-200 flex items-center justify-center"
                       >
                         <Camera className="w-5 h-5" />
                       </button>
@@ -2149,7 +2145,7 @@ export default function ExpiryManager() {
                         onClick={() =>
                           setFormData({ ...formData, category: "room_temp" })
                         }
-                        className={`flex-1 py-1.5 text-xs font-black rounded-lg ${
+                        className={`flex-1 py-1.5 text-xs font-black rounded-lg flex items-center justify-center ${
                           formData.category === "room_temp"
                             ? "bg-[#0058a3] text-white"
                             : "text-gray-500"
@@ -2162,7 +2158,7 @@ export default function ExpiryManager() {
                         onClick={() =>
                           setFormData({ ...formData, category: "frozen" })
                         }
-                        className={`flex-1 py-1.5 text-xs font-black rounded-lg ${
+                        className={`flex-1 py-1.5 text-xs font-black rounded-lg flex items-center justify-center ${
                           formData.category === "frozen"
                             ? "bg-[#0058a3] text-white"
                             : "text-gray-500"
@@ -2268,7 +2264,7 @@ export default function ExpiryManager() {
                     />
                   </div>
                   <div className="bg-gray-50 border-2 rounded-xl p-2 flex flex-col justify-center">
-                    <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-700 mb-1.5">
+                    <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-700 mb-1.5 cursor-pointer">
                       <input
                         type="checkbox"
                         name="hasSecondReminder"
@@ -2303,7 +2299,7 @@ export default function ExpiryManager() {
               <button
                 type="button"
                 onClick={closeModal}
-                className="px-6 py-3 text-slate-600 bg-white border-2 font-black rounded-xl text-sm"
+                className="px-6 py-3 text-slate-600 bg-white border-2 font-black rounded-xl text-sm flex items-center justify-center"
               >
                 取消
               </button>
