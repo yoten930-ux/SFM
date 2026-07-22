@@ -79,7 +79,8 @@ export default function ExpiryManager() {
   const itemsPerPage = 15;
   const [selectedIds, setSelectedIds] = useState(new Set());
 
-  const defaultForm = { barcode: "", name: "", category: "room_temp", location: "", receiveDate: getTodayStr(), expiryDate: "", quantity: 1, reminderDays: 60, hasSecondReminder: false, reminderDays2: 14 };
+  // 預設資料結構加入 isSoldOut (防呆布林值)
+  const defaultForm = { barcode: "", name: "", category: "room_temp", location: "", receiveDate: getTodayStr(), expiryDate: "", quantity: 1, isSoldOut: false, reminderDays: 60, hasSecondReminder: false, reminderDays2: 14 };
   const [formData, setFormData] = useState(defaultForm);
   const [isImporting, setIsImporting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -147,7 +148,7 @@ export default function ExpiryManager() {
     } catch (error) { loadLocalData(auth.store); }
   }, [librariesLoaded, auth.store]);
 
-  // 找回的關鍵功能一：自動從歷史庫存或主檔帶入資料
+  // 手動新增掃描時：自動帶入主檔資料 (忽略大小寫防呆)
   useEffect(() => {
     if (formData.barcode && !editingId) {
       const localMatch = products.find((p) => String(p.barcode).toLowerCase() === String(formData.barcode).toLowerCase());
@@ -165,9 +166,7 @@ export default function ExpiryManager() {
       }
       if (!useLocalMode && db) {
         const safeId = formData.barcode.replace(/\//g, "_");
-        db.collection("master_products")
-          .doc(safeId)
-          .get()
+        db.collection("master_products").doc(safeId).get()
           .then((docSnap) => {
             if (docSnap.exists) {
               const master = docSnap.data();
@@ -180,8 +179,7 @@ export default function ExpiryManager() {
                 reminderDays2: master.reminderDays2 || 14,
               }));
             }
-          })
-          .catch(() => {});
+          }).catch(() => {});
       }
     }
   }, [formData.barcode, db, useLocalMode, editingId, products]);
@@ -216,13 +214,12 @@ export default function ExpiryManager() {
     setIsLoginModalOpen(true);
   };
 
-  // 找回的核心防護網邏輯
+  // 隱性危險門檻防護網：確保在自訂天數的一半內就會轉紅
   const getExpiryStatus = (expiryDate, reminderDays = 60, hasSecondReminder = false, reminderDays2 = 14) => {
     const today = new Date(getTodayStr());
     const expDate = new Date(expiryDate);
     const diffDays = Math.ceil((expDate - today) / (1000 * 60 * 60 * 24));
     
-    // 隱性危險門檻：如果有開第二提醒就用第二提醒，沒開就用第一提醒天數的一半
     const dangerThreshold = hasSecondReminder ? reminderDays2 : Math.ceil(reminderDays / 2);
 
     if (diffDays < 0) return { status: "expired", label: "已過期", color: "text-red-600", bg: "bg-red-50", bgBar: "bg-red-400", border: "border-red-200", days: Math.abs(diffDays) };
@@ -231,13 +228,21 @@ export default function ExpiryManager() {
     return { status: "safe", label: "安全無虞", color: "text-green-600", bg: "bg-green-50", bgBar: "bg-green-400", border: "border-green-200", days: diffDays };
   };
 
+  // 同步快照至 Google Apps Script
   const syncSnapshotToGoogleSheets = async (productsToSync) => {
-    const activeProducts = productsToSync.filter(p => p.quantity !== "已賣完" && p.quantity !== 0);
+    // 同步時過濾掉已賣完與數量為0的商品，保持試算表乾淨
+    const activeProducts = productsToSync.filter(p => !p.isSoldOut && p.quantity > 0);
     const payload = {
       secret: SHARED_SECRET,
       action: "bulk_sync",
       store: auth.store,
-      items: activeProducts.map(p => ({ name: p.name, expiryDate: p.expiryDate, store: auth.store, quantity: p.quantity, location: p.location || "未指定" }))
+      items: activeProducts.map(p => ({ 
+        name: p.name, 
+        expiryDate: p.expiryDate, 
+        store: auth.store, 
+        quantity: p.quantity, 
+        location: p.location || "未指定" 
+      }))
     };
     try {
       await fetch(GAS_WEB_APP_URL, {
@@ -266,15 +271,14 @@ export default function ExpiryManager() {
         const html5QrCode = new window.Html5Qrcode("reader");
         scannerRef.current = html5QrCode;
         const boxWidth = Math.min(window.innerWidth - 40, 300);
-        // 優化掃描：改為長方形，減少上下雜訊
+        // 優化掃描：改為長方形，減少上下雜訊，提升 FPS 到 30
         const boxHeight = Math.floor(boxWidth * 0.6); 
         html5QrCode.start(
           { facingMode: "environment" },
-          // 優化掃描：提升至 30 fps
           { fps: 30, qrbox: { width: boxWidth, height: boxHeight } },
           (decodedText) => {
             if (target === "form") setFormData((prev) => ({ ...prev, barcode: decodedText }));
-            else if (target === "search") setSearchQuery(decodedText);
+            else if (target === "search") setSearchQuery(decodedText); // 搜尋時也會將抓到的條碼填入
             handleStopScanner();
           },
           () => {}
@@ -296,7 +300,6 @@ export default function ExpiryManager() {
     }
   };
 
-  // 找回的關鍵功能二：商品編輯按鈕功能
   const handleEdit = (product) => {
     setFormData(product);
     setEditingId(product.id);
@@ -317,6 +320,10 @@ export default function ExpiryManager() {
       quantity: Number(formData.quantity), reminderDays: Number(formData.reminderDays),
       reminderDays2: Number(formData.reminderDays2), updatedAt: new Date().toISOString()
     };
+    
+    // 如果數量為 0 或負數，自動判定為賣完
+    if (dataToSave.quantity <= 0) dataToSave.isSoldOut = true;
+
     let updatedProducts = [...products];
 
     if (useLocalMode) {
@@ -372,8 +379,9 @@ export default function ExpiryManager() {
     }
   };
 
+  // 重構為 isSoldOut 布林值切換
   const handleMarkSoldOut = async (product) => {
-    const updatedProduct = { ...product, quantity: "已賣完" };
+    const updatedProduct = { ...product, isSoldOut: true };
     let newProductsList = products.map(p => p.id === product.id ? updatedProduct : p);
     
     if (useLocalMode) {
@@ -381,7 +389,7 @@ export default function ExpiryManager() {
       localStorage.setItem(`expiry_products_${auth.store}`, JSON.stringify(newProductsList));
       syncSnapshotToGoogleSheets(newProductsList);
     } else if (db) {
-      await db.collection("stores").doc(auth.store).collection("products").doc(product.id).update({ quantity: "已賣完" });
+      await db.collection("stores").doc(auth.store).collection("products").doc(product.id).update({ isSoldOut: true });
       syncSnapshotToGoogleSheets(newProductsList);
     }
     showToast(`「${product.name}」已標記為賣完`, "success");
@@ -445,7 +453,6 @@ export default function ExpiryManager() {
     return "";
   };
 
-  // 找回的關鍵功能三：Excel 匯出
   const handleExcelExport = () => {
     if (!window.XLSX) return showToast("Excel 套件載入中", "warning");
     if (auth.role !== "admin") return showToast("僅管理者可匯出資料", "error");
@@ -456,7 +463,8 @@ export default function ExpiryManager() {
       商品名稱: p.name,
       溫層: p.category === "frozen" ? "冷凍" : "常溫",
       存放地點: p.location || "",
-      "數量(最小單位)": p.quantity,
+      "數量": p.quantity,
+      狀態: p.isSoldOut || p.quantity <= 0 ? "已售完" : "架上",
       進貨日期: p.receiveDate,
       有效期限: p.expiryDate,
       提醒天數: p.reminderDays,
@@ -471,7 +479,6 @@ export default function ExpiryManager() {
     showToast("匯出成功", "success");
   };
 
-  // 找回的關鍵功能四：Excel 匯入
   const handleExcelImport = async (e) => {
     if (!window.XLSX) return showToast("Excel 套件載入中", "warning");
     if (auth.role !== "admin") return showToast("僅管理者可匯入資料", "error");
@@ -480,6 +487,22 @@ export default function ExpiryManager() {
     setIsImporting(true);
 
     let defaultReceiveDate = getTodayStr();
+    // 檔名日期解析 (如果檔名包含例如 0722 或 2026-07-22)
+    const filenameMatch = file.name.match(/(\d{4}-\d{2}-\d{2})|(?:\D|^)(\d{4})(?:\D|$)/);
+    if (filenameMatch) {
+      if (filenameMatch[1]) {
+        defaultReceiveDate = filenameMatch[1];
+      } else if (filenameMatch[2]) {
+        const month = filenameMatch[2].substring(0, 2);
+        const day = filenameMatch[2].substring(2, 4);
+        const currentYear = new Date().getFullYear();
+        if (parseInt(month) >= 1 && parseInt(month) <= 12 && parseInt(day) >= 1 && parseInt(day) <= 31) {
+          defaultReceiveDate = `${currentYear}-${month}-${day}`;
+          showToast(`已自動從檔名帶入進貨日期：${defaultReceiveDate}`);
+        }
+      }
+    }
+
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try {
@@ -492,16 +515,44 @@ export default function ExpiryManager() {
         let skippedCount = 0;
 
         for (const row of data) {
-          const rawQuantity = row["數量(最小單位)"] || row["數量"] || row["庫存"] || row["Qty"] || 1;
+          let rawQuantity = row["數量(最小單位)"] || row["數量"] || row["庫存"] || row["Qty"] || 1;
+          let isSoldOut = false;
+          if (String(rawQuantity).trim() === "已賣完" || Number(rawQuantity) <= 0) {
+             isSoldOut = true;
+             rawQuantity = Number(rawQuantity) || 0; // 保留原始數字或0
+          } else {
+             rawQuantity = Number(rawQuantity);
+          }
+
           const name = String(row["商品名稱"] || row["品名"] || row["名稱"] || row["產品名稱"] || "未命名").trim();
           let rawBarcode = row["貨號"] || row["商品條碼"] || row["條碼"] || row["國際條碼"] || row["Barcode"] || row["Item Code"];
           const barcode = rawBarcode ? String(rawBarcode).trim() : name;
           
           let category = "room_temp";
+          let rDays = 60, hasRem2 = false, rDays2 = 14;
+
           if (String(row["溫層"] || row["分類"] || "").includes("冷凍")) category = "frozen";
           
+          // 異步查詢歷史溫層設定
           const localMatch = products.find((p) => String(p.barcode).toLowerCase() === barcode.toLowerCase());
-          if (localMatch) category = localMatch.category;
+          if (localMatch) { 
+            category = localMatch.category;
+            rDays = localMatch.reminderDays || 60;
+            hasRem2 = localMatch.hasSecondReminder || false;
+            rDays2 = localMatch.reminderDays2 || 14;
+          } else if (!useLocalMode && db) {
+            const safeId = barcode.replace(/\//g, "_");
+            try {
+              const docSnap = await db.collection("master_products").doc(safeId).get();
+              if (docSnap.exists) {
+                const master = docSnap.data();
+                category = master.category || category;
+                rDays = master.reminderDays || 60;
+                hasRem2 = master.hasSecondReminder || false;
+                rDays2 = master.reminderDays2 || 14;
+              }
+            } catch(e) {}
+          }
 
           const expiryRaw = row["有效期限"] || row["到期日"] || row["到期日期"] || row["效期"] || row["Expiry"];
           const parsedExpiry = formatExcelDate(expiryRaw);
@@ -519,10 +570,11 @@ export default function ExpiryManager() {
             location: String(row["存放地點"] || row["地點"] || row["儲位"] || ""),
             receiveDate: formatExcelDate(row["進貨日"] || row["進貨日期"]) || defaultReceiveDate,
             expiryDate: parsedExpiry,
-            quantity: Number(rawQuantity),
-            reminderDays: Number(row["提醒天數"] || (localMatch ? localMatch.reminderDays : 60)),
-            hasSecondReminder: localMatch ? localMatch.hasSecondReminder : false,
-            reminderDays2: localMatch ? localMatch.reminderDays2 : 14,
+            quantity: rawQuantity,
+            isSoldOut: isSoldOut,
+            reminderDays: Number(row["提醒天數"] || rDays),
+            hasSecondReminder: hasRem2,
+            reminderDays2: rDays2,
             updatedAt: new Date().toISOString(),
           };
 
@@ -540,6 +592,7 @@ export default function ExpiryManager() {
           );
           if (existingIdx >= 0) {
             updatedProducts[existingIdx].quantity = (Number(updatedProducts[existingIdx].quantity) || 0) + newProd.quantity;
+            updatedProducts[existingIdx].isSoldOut = false; // 如果原本賣完，匯入新數量自動解除賣完狀態
             mergedExistingProducts[updatedProducts[existingIdx].id] = updatedProducts[existingIdx];
           } else {
             updatedProducts.push(newProd);
@@ -553,7 +606,7 @@ export default function ExpiryManager() {
         } else if (db && auth.store) {
           const batch = db.batch();
           for (const prod of finalNewProducts) batch.set(db.collection("stores").doc(auth.store).collection("products").doc(prod.id), prod);
-          for (const id in mergedExistingProducts) batch.update(db.collection("stores").doc(auth.store).collection("products").doc(id), { quantity: mergedExistingProducts[id].quantity });
+          for (const id in mergedExistingProducts) batch.update(db.collection("stores").doc(auth.store).collection("products").doc(id), { quantity: mergedExistingProducts[id].quantity, isSoldOut: false });
           await batch.commit();
         }
 
@@ -569,7 +622,7 @@ export default function ExpiryManager() {
     reader.readAsBinaryString(file);
   };
 
-  // 找回的防呆搜尋功能 (toLowerCase)
+  // 防呆大小寫搜尋與已售完排除
   let filteredProducts = products.filter((p) => {
     const q = searchQuery.toLowerCase().trim();
     const matchSearch = p.name.toLowerCase().includes(q) || p.barcode.toLowerCase().includes(q);
@@ -578,8 +631,8 @@ export default function ExpiryManager() {
     if (filterCategory !== "all" && p.category !== filterCategory) return false;
     if (filterLocation !== "all" && p.location !== filterLocation) return false;
 
-    if (filterStatus === "sold_out") return p.quantity === "已賣完";
-    if (p.quantity === "已賣完") return false;
+    if (filterStatus === "sold_out") return p.isSoldOut || p.quantity <= 0;
+    if (p.isSoldOut || p.quantity <= 0) return false; // 排除已售完與數量<=0的
     
     if (filterStatus !== "all") {
       const st = getExpiryStatus(p.expiryDate, p.reminderDays, p.hasSecondReminder, p.reminderDays2);
@@ -589,22 +642,28 @@ export default function ExpiryManager() {
     return true;
   });
 
-  // 永遠統一以群組顯示，不被拆散
+  // 統一進行群組化，無論什麼排序都不拆散
   const groups = {};
   filteredProducts.forEach((p) => {
     const key = `${String(p.barcode).trim().toLowerCase()}_${String(p.name).trim()}`;
-    if (!groups[key]) groups[key] = { key, name: p.name, barcode: p.barcode, category: p.category, totalQuantity: 0, earliestExpiry: null, batches: [] };
-    if (p.quantity !== "已賣完") groups[key].totalQuantity += Number(p.quantity) || 0;
+    if (!groups[key]) {
+      groups[key] = { key, name: p.name, barcode: p.barcode, category: p.category, totalQuantity: 0, earliestExpiry: null, batches: [] };
+    }
+    if (!p.isSoldOut && p.quantity > 0) {
+      groups[key].totalQuantity += Number(p.quantity) || 0;
+    }
     groups[key].batches.push(p);
   });
 
   let displayList = Object.values(groups).map(g => {
+    // 每組內部按效期排序
     g.batches.sort((a, b) => new Date(a.expiryDate) - new Date(b.expiryDate));
     if (g.batches.length > 0) g.earliestExpiry = new Date(g.batches[0].expiryDate).getTime();
     else g.earliestExpiry = Infinity;
     return g;
   });
 
+  // 依據條件對整包群組進行排序
   displayList.sort((a, b) => {
     let result = 0;
     if (sortBy === "expiry") result = (a.earliestExpiry || 0) - (b.earliestExpiry || 0);
@@ -614,7 +673,7 @@ export default function ExpiryManager() {
   });
 
   const totalPages = Math.max(1, Math.ceil(displayList.length / itemsPerPage));
-  // 找回的分頁防呆，防止越界死白
+  // 分頁防呆，防止刪除後越界
   useEffect(() => { if (currentPage > totalPages) setCurrentPage(totalPages); }, [totalPages, currentPage]);
   const paginatedList = displayList.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
   
@@ -625,10 +684,11 @@ export default function ExpiryManager() {
     else setSelectedIds(new Set(currentDisplayIds));
   };
 
+  // FIFO 尋寶綁定地點：找出每個地點最早到期的那批商品
   const fifoIds = new Set();
   const locationBarcodeEarliest = {};
   products.forEach((p) => {
-    if (p.quantity === "已賣完") return;
+    if (p.isSoldOut || p.quantity <= 0) return;
     const diff = Math.ceil((new Date(p.expiryDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24));
     if (diff >= 0) {
       const locKey = `${p.location || "未指定"}_${p.barcode}`;
@@ -650,12 +710,11 @@ export default function ExpiryManager() {
     for (let i = 0; i < firstDay; i++) days.push(<div key={`empty-${i}`} className="p-2"></div>);
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-      const dayProducts = products.filter((p) => p.expiryDate === dateStr && p.quantity !== "已賣完" && p.quantity !== 0);
+      const dayProducts = products.filter((p) => p.expiryDate === dateStr && !p.isSoldOut && p.quantity > 0);
       const isSelected = selectedCalendarDay === dateStr;
 
       let dotColor = "bg-[#0058a3]";
       if (dayProducts.length > 0) {
-        // 找回的彩色點點邏輯
         const statuses = dayProducts.map(p => getExpiryStatus(p.expiryDate, p.reminderDays, p.hasSecondReminder, p.reminderDays2).status);
         if (statuses.includes("expired") || statuses.includes("danger")) dotColor = "bg-red-500";
         else if (statuses.includes("warning")) dotColor = "bg-orange-500";
@@ -740,9 +799,7 @@ export default function ExpiryManager() {
           {auth.role === "admin" && (
             <>
               <button onClick={() => setIsSettingsOpen(true)} className="p-2.5 bg-white/10 text-white rounded-xl"><Settings className="w-5 h-5" /></button>
-              {/* 找回的匯出按鈕 */}
               <button onClick={handleExcelExport} className="p-2.5 bg-white/10 text-white rounded-xl"><FileDown className="w-5 h-5" /></button>
-              {/* 找回的匯入按鈕與觸發事件 */}
               <label className="p-2.5 bg-white/10 text-white rounded-xl cursor-pointer">
                 {isImporting ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileUp className="w-5 h-5" />}
                 <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleExcelImport} />
@@ -756,20 +813,20 @@ export default function ExpiryManager() {
       <main className="max-w-3xl mx-auto px-4 py-6">
         <div className={`grid ${auth.role === "admin" ? "grid-cols-4" : "grid-cols-3"} gap-2 mb-5`}>
           <div onClick={() => { setFilterStatus("all"); setCurrentPage(1); }} className={`cursor-pointer transition p-2 rounded-xl border-2 flex flex-col items-center justify-center shadow-sm ${filterStatus === "all" ? "bg-[#0058a3] border-[#0058a3] text-white" : "bg-white border-gray-200 text-slate-700"}`}>
-            <span className="text-xl font-black">{products.filter(p => p.quantity !== "已賣完").length}</span>
+            <span className="text-xl font-black">{products.filter(p => !p.isSoldOut && p.quantity > 0).length}</span>
             <span className="text-[10px] font-bold">全部商品</span>
           </div>
           <div onClick={() => { setFilterStatus("warning"); setCurrentPage(1); }} className={`cursor-pointer transition p-2 rounded-xl border-2 flex flex-col items-center justify-center shadow-sm ${filterStatus === "warning" ? "bg-orange-500 border-orange-500 text-white" : "bg-orange-50 border-orange-200 text-orange-700"}`}>
-            <span className="text-xl font-black">{products.filter(p => p.quantity !== "已賣完" && (getExpiryStatus(p.expiryDate, p.reminderDays, p.hasSecondReminder, p.reminderDays2).status === "danger" || getExpiryStatus(p.expiryDate, p.reminderDays, p.hasSecondReminder, p.reminderDays2).status === "warning")).length}</span>
+            <span className="text-xl font-black">{products.filter(p => !p.isSoldOut && p.quantity > 0 && (getExpiryStatus(p.expiryDate, p.reminderDays, p.hasSecondReminder, p.reminderDays2).status === "danger" || getExpiryStatus(p.expiryDate, p.reminderDays, p.hasSecondReminder, p.reminderDays2).status === "warning")).length}</span>
             <span className="text-[10px] font-bold">近期警戒</span>
           </div>
           <div onClick={() => { setFilterStatus("expired"); setCurrentPage(1); }} className={`cursor-pointer transition p-2 rounded-xl border-2 flex flex-col items-center justify-center shadow-sm ${filterStatus === "expired" ? "bg-red-600 border-red-600 text-white" : "bg-red-50 border-red-200 text-red-600"}`}>
-            <span className="text-xl font-black">{products.filter(p => p.quantity !== "已賣完" && getExpiryStatus(p.expiryDate, p.reminderDays, p.hasSecondReminder, p.reminderDays2).status === "expired").length}</span>
+            <span className="text-xl font-black">{products.filter(p => !p.isSoldOut && p.quantity > 0 && getExpiryStatus(p.expiryDate, p.reminderDays, p.hasSecondReminder, p.reminderDays2).status === "expired").length}</span>
             <span className="text-[10px] font-bold">已過期</span>
           </div>
           {auth.role === "admin" && (
             <div onClick={() => { setFilterStatus("sold_out"); setCurrentPage(1); }} className={`cursor-pointer transition p-2 rounded-xl border-2 flex flex-col items-center justify-center shadow-sm ${filterStatus === "sold_out" ? "bg-gray-600 border-gray-600 text-white" : "bg-gray-100 border-gray-200 text-gray-600"}`}>
-              <span className="text-xl font-black">{products.filter(p => p.quantity === "已賣完").length}</span>
+              <span className="text-xl font-black">{products.filter(p => p.isSoldOut || p.quantity <= 0).length}</span>
               <span className="text-[10px] font-bold">已售完清單</span>
             </div>
           )}
@@ -836,7 +893,7 @@ export default function ExpiryManager() {
                   {group.batches.map((product) => {
                     const status = getExpiryStatus(product.expiryDate, product.reminderDays, product.hasSecondReminder, product.reminderDays2);
                     const isFIFO = fifoIds.has(product.id);
-                    const isSoldOut = product.quantity === "已賣完";
+                    const isSoldOut = product.isSoldOut || product.quantity <= 0;
                     
                     return (
                       <div key={product.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-3 rounded-xl border-2 relative transition ${isSoldOut ? "bg-gray-100 border-gray-300 opacity-70" : isFIFO ? "border-[#0058a3] bg-blue-50/30" : status.border}`}>
@@ -856,6 +913,7 @@ export default function ExpiryManager() {
                               <span>{status.label}</span><span>{status.status === "expired" ? `超${status.days}天` : `剩${status.days}天`}</span>
                             </div>
                           )}
+                          {isSoldOut && <div className="px-3 py-1.5 rounded-lg bg-gray-200 text-gray-500 font-black text-xs flex items-center justify-center shadow-sm">已售完</div>}
                           <div className="flex gap-1.5">
                             {!isSoldOut && (
                               <>
@@ -863,7 +921,6 @@ export default function ExpiryManager() {
                                 <button onClick={() => handleMarkSoldOut(product)} className="p-2 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-xs font-bold">賣完</button>
                               </>
                             )}
-                            {/* 找回的編輯按鈕觸發事件 */}
                             <button onClick={() => handleEdit(product)} className="p-2 text-[#0058a3] bg-blue-50 hover:bg-blue-100 rounded-lg"><Edit2 className="w-4 h-4" /></button>
                             {auth.role === "admin" && <button onClick={() => handleDelete(product.id)} className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg"><Trash2 className="w-4 h-4" /></button>}
                           </div>
@@ -886,7 +943,6 @@ export default function ExpiryManager() {
         )}
       </main>
 
-      {}
       {isSettingsOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 border-t-8 border-[#0058a3] max-h-[90vh] overflow-y-auto">
@@ -913,7 +969,21 @@ export default function ExpiryManager() {
                 <input type="text" value={newPasswordInput} onChange={(e) => setNewPasswordInput(e.target.value)} placeholder="新管理員密碼..." className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold outline-none" />
                 <input type="text" value={newStaffPwdInput} onChange={(e) => setNewStaffPwdInput(e.target.value)} placeholder="新一般員工密碼..." className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold outline-none" />
                 <div className="flex gap-2">
-                  <button onClick={() => { if(db && !useLocalMode) db.collection("stores").doc(auth.store).collection("settings").doc("config").set({customPassword: newPasswordInput.trim()||storePasswords[auth.store]||"8888", staffPassword: newStaffPwdInput.trim()||staffPasswords[auth.store]||"1234"}, {merge:true}); setStorePasswords(prev=>({...prev, [auth.store]: newPasswordInput.trim()||storePasswords[auth.store]})); setStaffPasswords(prev=>({...prev, [auth.store]: newStaffPwdInput.trim()||staffPasswords[auth.store]})); setIsEditingPassword(false); showToast("密碼已更新");}} className="flex-1 py-2 bg-orange-500 text-white font-bold rounded-xl text-sm">確認更新</button>
+                  <button onClick={() => { 
+                    const newAdmin = newPasswordInput.trim() || storePasswords[auth.store] || "8888";
+                    const newStaff = newStaffPwdInput.trim() || staffPasswords[auth.store] || "1234";
+                    if(db && !useLocalMode) {
+                      db.collection("stores").doc(auth.store).collection("settings").doc("config").set({customPassword: newAdmin, staffPassword: newStaff}, {merge:true}); 
+                    } else {
+                      const localSettings = JSON.parse(localStorage.getItem(`expiry_manager_settings_${auth.store}`)) || { locations: ["倉庫A", "展示架", "冷藏室", "冷凍庫"] };
+                      localSettings.customPassword = newAdmin;
+                      localSettings.staffPassword = newStaff;
+                      localStorage.setItem(`expiry_manager_settings_${auth.store}`, JSON.stringify(localSettings));
+                    }
+                    setStorePasswords(prev=>({...prev, [auth.store]: newAdmin})); 
+                    setStaffPasswords(prev=>({...prev, [auth.store]: newStaff})); 
+                    setIsEditingPassword(false); showToast("密碼已更新");
+                  }} className="flex-1 py-2 bg-orange-500 text-white font-bold rounded-xl text-sm">確認更新</button>
                   <button onClick={() => setIsEditingPassword(false)} className="flex-1 py-2 bg-gray-200 text-gray-600 font-bold rounded-xl text-sm">取消</button>
                 </div>
               </div>
@@ -938,7 +1008,7 @@ export default function ExpiryManager() {
                 <div className="border-t-2 border-dashed pt-4">
                   <h4 className="font-black text-slate-800 mb-3 flex items-center gap-2"><span className="bg-[#FBD914] text-[#0058a3] px-2 py-1 rounded text-xs">{selectedCalendarDay}</span> 到期商品</h4>
                   <div className="space-y-2">
-                    {products.filter(p => p.expiryDate === selectedCalendarDay && p.quantity !== "已賣完" && p.quantity !== 0).length === 0 ? <p className="text-gray-400 text-sm font-bold text-center py-4 bg-gray-50 rounded-xl">此日無商品到期</p> : products.filter(p => p.expiryDate === selectedCalendarDay && p.quantity !== "已賣完" && p.quantity !== 0).map((p) => (<div key={p.id} className="bg-white p-3 rounded-xl flex justify-between items-center border-2 shadow-sm"><span className="font-bold text-sm text-slate-700 truncate mr-2">{p.name}</span><span className="text-xs font-black px-2 py-1 bg-blue-50 text-[#0058a3] rounded">數量: {p.quantity}</span></div>))}
+                    {products.filter(p => p.expiryDate === selectedCalendarDay && !p.isSoldOut && p.quantity > 0).length === 0 ? <p className="text-gray-400 text-sm font-bold text-center py-4 bg-gray-50 rounded-xl">此日無商品到期</p> : products.filter(p => p.expiryDate === selectedCalendarDay && !p.isSoldOut && p.quantity > 0).map((p) => (<div key={p.id} className="bg-white p-3 rounded-xl flex justify-between items-center border-2 shadow-sm"><span className="font-bold text-sm text-slate-700 truncate mr-2">{p.name}</span><span className="text-xs font-black px-2 py-1 bg-blue-50 text-[#0058a3] rounded">數量: {p.quantity}</span></div>))}
                   </div>
                 </div>
               )}
@@ -978,7 +1048,7 @@ export default function ExpiryManager() {
                   <div><label className="block text-xs font-black mb-1.5 text-slate-700">有效期限</label><input type="date" name="expiryDate" required value={formData.expiryDate} onChange={handleInputChange} disabled={auth.role !== "admin" && editingId} className="w-full px-3 py-2 border-2 border-[#0058a3] bg-[#0058a3]/5 rounded-xl text-sm font-black focus:border-[#0058a3] outline-none" /></div>
                 </div>
                 <div className="grid grid-cols-3 gap-3">
-                  <div><label className="block text-xs font-black mb-1.5 text-slate-700">數量</label><input type="number" name="quantity" min="1" required value={formData.quantity} onChange={handleInputChange} className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold bg-[#FBD914]/10 focus:border-[#0058a3] outline-none" /></div>
+                  <div><label className="block text-xs font-black mb-1.5 text-slate-700">數量</label><input type="number" name="quantity" required value={formData.quantity} onChange={handleInputChange} className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold bg-[#FBD914]/10 focus:border-[#0058a3] outline-none" /></div>
                   <div><label className="block text-xs font-black mb-1.5 text-slate-700">提醒(天)</label><input type="number" name="reminderDays" min="1" required value={formData.reminderDays} onChange={handleInputChange} disabled={auth.role !== "admin" && editingId} className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none" /></div>
                   <div className="bg-gray-50 border-2 rounded-xl p-2 flex flex-col justify-center">
                     <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-700 mb-1.5"><input type="checkbox" name="hasSecondReminder" checked={formData.hasSecondReminder} onChange={handleInputChange} disabled={auth.role !== "admin" && editingId} className="w-3 h-3 accent-[#0058a3]" /> 第二提醒</label>
