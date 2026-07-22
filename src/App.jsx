@@ -918,10 +918,10 @@ export default function ExpiryManager() {
               p.location === newProd.location
           );
           if (existingIdx >= 0) {
-            updatedProducts[existingIdx].quantity =
-              (Number(updatedProducts[existingIdx].quantity) || 0) +
-              newProd.quantity;
-            updatedProducts[existingIdx].isSoldOut = false; // 💡 合併時自動解除已售完
+            // 💡 改良：依據合併後的實際數量精準判定 isSoldOut
+            const mergedQty = (Number(updatedProducts[existingIdx].quantity) || 0) + newProd.quantity;
+            updatedProducts[existingIdx].quantity = mergedQty;
+            updatedProducts[existingIdx].isSoldOut = mergedQty <= 0; 
             mergedExistingProducts[updatedProducts[existingIdx].id] =
               updatedProducts[existingIdx];
           } else {
@@ -956,7 +956,7 @@ export default function ExpiryManager() {
                 .doc(id),
               {
                 quantity: mergedExistingProducts[id].quantity,
-                isSoldOut: false,
+                isSoldOut: mergedExistingProducts[id].isSoldOut, // 💡 同步將精準的布林值寫入 Firestore
               }
             );
           await batch.commit();
