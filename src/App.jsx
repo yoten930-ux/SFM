@@ -1116,7 +1116,6 @@ export default function ExpiryManager() {
     else setSelectedIds(new Set(currentDisplayIds));
   };
 
-  // 💡 修正 2：雙層排序的精準先進先出 (FIFO) 判斷邏輯
   const fifoIds = new Set();
   const barcodeEarliest = {}; 
 
@@ -1126,9 +1125,7 @@ export default function ExpiryManager() {
       (new Date(p.expiryDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24)
     );
     
-    // 只針對未過期的商品尋找最早批次
     if (diff >= 0) {
-      // 💡 改為單純用「條碼」作為群組 Key，跨地點比對出整店最早的一批
       const barcodeKey = String(p.barcode).trim().toLowerCase();
       const current = barcodeEarliest[barcodeKey];
 
@@ -1142,7 +1139,6 @@ export default function ExpiryManager() {
           receiveTime: pReceiveTime,
         };
       } else {
-        // 💡 雙層比對：先比效期，效期相同再比進貨日
         if (pExpiryTime < current.expiryTime) {
           barcodeEarliest[barcodeKey] = {
             id: p.id,
@@ -1150,7 +1146,6 @@ export default function ExpiryManager() {
             receiveTime: pReceiveTime,
           };
         } else if (pExpiryTime === current.expiryTime) {
-          // 效期相同時，進貨日較早的優先
           if (pReceiveTime < current.receiveTime) {
             barcodeEarliest[barcodeKey] = {
               id: p.id,
@@ -1163,7 +1158,6 @@ export default function ExpiryManager() {
     }
   });
 
-  // 將篩選出的最早批次 ID 加入 Set 中，讓畫面亮起標籤
   Object.values(barcodeEarliest).forEach((item) => fifoIds.add(item.id));
 
   const renderCalendar = () => {
@@ -1729,10 +1723,11 @@ export default function ExpiryManager() {
                             : status.border
                         }`}
                       >
+                        {/* 💡 更新標籤文字為「全店最先到期」 */}
                         {isFIFO && !isActuallySoldOut && (
                           <div className="absolute -top-3 -right-2 z-[10]">
                             <span className="bg-[#0058a3] text-[#FBD914] text-[10px] font-black px-2.5 py-1 rounded-full shadow-md animate-pulse border-2 border-white">
-                              🏷️ 此地點優先使用
+                              🏷️ 全店最先到期
                             </span>
                           </div>
                         )}
