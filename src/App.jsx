@@ -372,7 +372,6 @@ export default function ExpiryManager() {
     };
   };
 
-  // 💡 修正 1：徹底補齊 Payload，並處理數字 0 falsy 的邊界條件
   const syncSnapshotToGoogleSheets = async (productsToSync) => {
     const activeProducts = productsToSync.filter(
       (p) => !p.isSoldOut && p.quantity > 0
@@ -383,13 +382,13 @@ export default function ExpiryManager() {
       store: auth.store,
       items: activeProducts.map((p) => ({
         name: p.name,
+        barcode: p.barcode || "",
+        category: p.category || "room_temp",
         expiryDate: p.expiryDate,
+        receiveDate: p.receiveDate || "",
         store: auth.store,
         quantity: p.quantity,
         location: p.location || "未指定",
-        barcode: p.barcode || "",
-        category: p.category || "room_temp",
-        receiveDate: p.receiveDate || "",
         reminderDays: p.reminderDays !== undefined ? p.reminderDays : 60,
         hasSecondReminder: p.hasSecondReminder || false,
         reminderDays2: p.reminderDays2 !== undefined ? p.reminderDays2 : 14,
@@ -485,7 +484,7 @@ export default function ExpiryManager() {
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
 
     const isLocationChanged = editingId
-      ? formData.location !== products.find(p => p.id === editingId)?.location
+      ? formData.location !== products.find((p) => p.id === editingId)?.location
       : true;
 
     const dataToSave = {
@@ -498,7 +497,8 @@ export default function ExpiryManager() {
       updatedAt: new Date().toISOString(),
       locationUpdatedAt: isLocationChanged
         ? new Date().toISOString()
-        : (products.find(p => p.id === editingId)?.locationUpdatedAt || new Date().toISOString()),
+        : products.find((p) => p.id === editingId)?.locationUpdatedAt ||
+          new Date().toISOString(),
       lastUpdatedBy: currentUserRole,
     };
 
@@ -622,13 +622,13 @@ export default function ExpiryManager() {
     if (isNaN(currentQty) || currentQty <= 1) return handleMarkSoldOut(product);
 
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
-    const updatedProduct = { 
-      ...product, 
+    const updatedProduct = {
+      ...product,
       quantity: currentQty - 1,
       updatedAt: new Date().toISOString(),
-      lastUpdatedBy: currentUserRole
+      lastUpdatedBy: currentUserRole,
     };
-    
+
     let newProductsList = products.map((p) =>
       p.id === product.id ? updatedProduct : p
     );
@@ -646,10 +646,10 @@ export default function ExpiryManager() {
         .doc(auth.store)
         .collection("products")
         .doc(product.id)
-        .update({ 
+        .update({
           quantity: currentQty - 1,
           updatedAt: updatedProduct.updatedAt,
-          lastUpdatedBy: updatedProduct.lastUpdatedBy
+          lastUpdatedBy: updatedProduct.lastUpdatedBy,
         });
       syncSnapshotToGoogleSheets(newProductsList);
     }
@@ -657,11 +657,11 @@ export default function ExpiryManager() {
 
   const handleMarkSoldOut = async (product) => {
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
-    const updatedProduct = { 
-      ...product, 
+    const updatedProduct = {
+      ...product,
       isSoldOut: true,
       updatedAt: new Date().toISOString(),
-      lastUpdatedBy: currentUserRole
+      lastUpdatedBy: currentUserRole,
     };
 
     let newProductsList = products.map((p) =>
@@ -681,10 +681,10 @@ export default function ExpiryManager() {
         .doc(auth.store)
         .collection("products")
         .doc(product.id)
-        .update({ 
+        .update({
           isSoldOut: true,
           updatedAt: updatedProduct.updatedAt,
-          lastUpdatedBy: updatedProduct.lastUpdatedBy
+          lastUpdatedBy: updatedProduct.lastUpdatedBy,
         });
       syncSnapshotToGoogleSheets(newProductsList);
     }
@@ -969,7 +969,7 @@ export default function ExpiryManager() {
             updatedProducts[existingIdx].isSoldOut = mergedQty <= 0;
             updatedProducts[existingIdx].updatedAt = new Date().toISOString();
             updatedProducts[existingIdx].lastUpdatedBy = currentUserRole;
-            
+
             mergedExistingProducts[updatedProducts[existingIdx].id] =
               updatedProducts[existingIdx];
           } else {
@@ -1203,8 +1203,8 @@ export default function ExpiryManager() {
 
   if (isLoginModalOpen) {
     return (
-      <div className="min-h-screen bg-[#0058a3] flex items-center justify-center p-4">
-        <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden border-b-8 border-[#FBD914]">
+      <div className="min-h-screen bg-[#0058a3] flex flex-col items-center justify-center p-4 relative">
+        <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden border-b-8 border-[#FBD914] z-10 mb-8">
           <div className="p-8 text-center bg-white">
             <h1 className="text-2xl font-black text-[#0058a3] tracking-wider mb-6 flex items-center justify-center gap-2">
               <Package className="w-8 h-8 text-[#FBD914]" /> 向即期品說再見
@@ -1260,6 +1260,17 @@ export default function ExpiryManager() {
               </form>
             )}
           </div>
+        </div>
+
+        {/* 💡 登入頁版權宣告 */}
+        <div className="absolute bottom-4 sm:bottom-6 w-full text-center flex flex-col gap-1 text-white/70 text-xs font-bold tracking-widest z-10">
+          <span>
+            &copy; {new Date().getFullYear()} 向即期品說再見. All rights
+            reserved.
+          </span>
+          <span className="text-[10px] text-white/50">
+            Designed by NHS Peter Chen (Yow-Tyng Chen)
+          </span>
         </div>
       </div>
     );
@@ -1727,12 +1738,17 @@ export default function ExpiryManager() {
                             <div className="flex items-center gap-2 text-sm font-bold text-slate-700 flex-wrap">
                               <MapPin className="w-4 h-4 text-[#0058a3]" />{" "}
                               {product.location || "未指定"}{" "}
-                              {(!product.locationUpdatedAt || (new Date() - new Date(product.locationUpdatedAt)) > 14 * 24 * 60 * 60 * 1000) && !isActuallySoldOut && (
-                                <span className="text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded-md font-bold">
-                                  待確認
-                                </span>
-                              )}
-                              <span className="text-gray-300 ml-1">|</span> 數量:{" "}
+                              {(!product.locationUpdatedAt ||
+                                new Date() -
+                                  new Date(product.locationUpdatedAt) >
+                                  14 * 24 * 60 * 60 * 1000) &&
+                                !isActuallySoldOut && (
+                                  <span className="text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded-md font-bold">
+                                    待確認
+                                  </span>
+                                )}
+                              <span className="text-gray-300 ml-1">|</span>{" "}
+                              數量:{" "}
                               <span
                                 className={
                                   isActuallySoldOut
@@ -1751,7 +1767,9 @@ export default function ExpiryManager() {
                               {!isActuallySoldOut && (
                                 <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded ml-auto flex items-center gap-1">
                                   <Clock className="w-3 h-3" />
-                                  {product.lastUpdatedBy ? `${product.lastUpdatedBy}異動` : "系統"}
+                                  {product.lastUpdatedBy
+                                    ? `${product.lastUpdatedBy}異動`
+                                    : "系統"}
                                 </span>
                               )}
                             </div>
@@ -1841,8 +1859,13 @@ export default function ExpiryManager() {
         )}
       </main>
 
-      <footer className="w-full text-center py-6 text-slate-400 text-xs font-bold tracking-widest relative z-10">
-        &copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.
+      <footer className="w-full text-center py-6 text-slate-400 text-xs font-bold tracking-widest relative z-10 flex flex-col gap-1">
+        <span>
+          &copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.
+        </span>
+        <span className="text-[10px] text-slate-300">
+          Designed by NHS Peter Chen (Yow-Tyng Chen)
+        </span>
       </footer>
 
       {isSettingsOpen && (
