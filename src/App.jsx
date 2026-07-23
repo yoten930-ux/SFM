@@ -372,6 +372,7 @@ export default function ExpiryManager() {
     };
   };
 
+  // 💡 修正 1：徹底補齊 Payload，並處理數字 0 falsy 的邊界條件
   const syncSnapshotToGoogleSheets = async (productsToSync) => {
     const activeProducts = productsToSync.filter(
       (p) => !p.isSoldOut && p.quantity > 0
@@ -382,16 +383,16 @@ export default function ExpiryManager() {
       store: auth.store,
       items: activeProducts.map((p) => ({
         name: p.name,
-        barcode: p.barcode || "",
-        category: p.category,
         expiryDate: p.expiryDate,
-        receiveDate: p.receiveDate || "",
         store: auth.store,
         quantity: p.quantity,
         location: p.location || "未指定",
-        reminderDays: p.reminderDays || 60,
+        barcode: p.barcode || "",
+        category: p.category || "room_temp",
+        receiveDate: p.receiveDate || "",
+        reminderDays: p.reminderDays !== undefined ? p.reminderDays : 60,
         hasSecondReminder: p.hasSecondReminder || false,
-        reminderDays2: p.reminderDays2 || 14,
+        reminderDays2: p.reminderDays2 !== undefined ? p.reminderDays2 : 14,
       })),
     };
     try {
