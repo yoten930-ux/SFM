@@ -484,7 +484,7 @@ export default function ExpiryManager() {
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
 
     const isLocationChanged = editingId
-      ? formData.location !== products.find((p) => p.id === editingId)?.location
+      ? formData.location !== products.find(p => p.id === editingId)?.location
       : true;
 
     const dataToSave = {
@@ -497,8 +497,7 @@ export default function ExpiryManager() {
       updatedAt: new Date().toISOString(),
       locationUpdatedAt: isLocationChanged
         ? new Date().toISOString()
-        : products.find((p) => p.id === editingId)?.locationUpdatedAt ||
-          new Date().toISOString(),
+        : (products.find(p => p.id === editingId)?.locationUpdatedAt || new Date().toISOString()),
       lastUpdatedBy: currentUserRole,
     };
 
@@ -622,13 +621,13 @@ export default function ExpiryManager() {
     if (isNaN(currentQty) || currentQty <= 1) return handleMarkSoldOut(product);
 
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
-    const updatedProduct = {
-      ...product,
+    const updatedProduct = { 
+      ...product, 
       quantity: currentQty - 1,
       updatedAt: new Date().toISOString(),
-      lastUpdatedBy: currentUserRole,
+      lastUpdatedBy: currentUserRole
     };
-
+    
     let newProductsList = products.map((p) =>
       p.id === product.id ? updatedProduct : p
     );
@@ -646,10 +645,10 @@ export default function ExpiryManager() {
         .doc(auth.store)
         .collection("products")
         .doc(product.id)
-        .update({
+        .update({ 
           quantity: currentQty - 1,
           updatedAt: updatedProduct.updatedAt,
-          lastUpdatedBy: updatedProduct.lastUpdatedBy,
+          lastUpdatedBy: updatedProduct.lastUpdatedBy
         });
       syncSnapshotToGoogleSheets(newProductsList);
     }
@@ -657,11 +656,11 @@ export default function ExpiryManager() {
 
   const handleMarkSoldOut = async (product) => {
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
-    const updatedProduct = {
-      ...product,
+    const updatedProduct = { 
+      ...product, 
       isSoldOut: true,
       updatedAt: new Date().toISOString(),
-      lastUpdatedBy: currentUserRole,
+      lastUpdatedBy: currentUserRole
     };
 
     let newProductsList = products.map((p) =>
@@ -681,10 +680,10 @@ export default function ExpiryManager() {
         .doc(auth.store)
         .collection("products")
         .doc(product.id)
-        .update({
+        .update({ 
           isSoldOut: true,
           updatedAt: updatedProduct.updatedAt,
-          lastUpdatedBy: updatedProduct.lastUpdatedBy,
+          lastUpdatedBy: updatedProduct.lastUpdatedBy
         });
       syncSnapshotToGoogleSheets(newProductsList);
     }
@@ -969,7 +968,7 @@ export default function ExpiryManager() {
             updatedProducts[existingIdx].isSoldOut = mergedQty <= 0;
             updatedProducts[existingIdx].updatedAt = new Date().toISOString();
             updatedProducts[existingIdx].lastUpdatedBy = currentUserRole;
-
+            
             mergedExistingProducts[updatedProducts[existingIdx].id] =
               updatedProducts[existingIdx];
           } else {
@@ -1117,31 +1116,55 @@ export default function ExpiryManager() {
     else setSelectedIds(new Set(currentDisplayIds));
   };
 
+  // 💡 修正 2：雙層排序的精準先進先出 (FIFO) 判斷邏輯
   const fifoIds = new Set();
-  const locationBarcodeEarliest = {};
+  const barcodeEarliest = {}; 
+
   products.forEach((p) => {
     if (p.isSoldOut || p.quantity <= 0) return;
     const diff = Math.ceil(
       (new Date(p.expiryDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24)
     );
+    
+    // 只針對未過期的商品尋找最早批次
     if (diff >= 0) {
-      const locKey = `${p.location || "未指定"}_${p.barcode}`;
-      const current = locationBarcodeEarliest[locKey];
-      if (
-        !current ||
-        new Date(p.expiryDate).getTime() <
-          new Date(current.expiryDate).getTime()
-      ) {
-        locationBarcodeEarliest[locKey] = {
+      // 💡 改為單純用「條碼」作為群組 Key，跨地點比對出整店最早的一批
+      const barcodeKey = String(p.barcode).trim().toLowerCase();
+      const current = barcodeEarliest[barcodeKey];
+
+      const pExpiryTime = new Date(p.expiryDate).getTime();
+      const pReceiveTime = new Date(p.receiveDate || getTodayStr()).getTime();
+
+      if (!current) {
+        barcodeEarliest[barcodeKey] = {
           id: p.id,
-          expiryDate: p.expiryDate,
+          expiryTime: pExpiryTime,
+          receiveTime: pReceiveTime,
         };
+      } else {
+        // 💡 雙層比對：先比效期，效期相同再比進貨日
+        if (pExpiryTime < current.expiryTime) {
+          barcodeEarliest[barcodeKey] = {
+            id: p.id,
+            expiryTime: pExpiryTime,
+            receiveTime: pReceiveTime,
+          };
+        } else if (pExpiryTime === current.expiryTime) {
+          // 效期相同時，進貨日較早的優先
+          if (pReceiveTime < current.receiveTime) {
+            barcodeEarliest[barcodeKey] = {
+              id: p.id,
+              expiryTime: pExpiryTime,
+              receiveTime: pReceiveTime,
+            };
+          }
+        }
       }
     }
   });
-  Object.values(locationBarcodeEarliest).forEach((item) =>
-    fifoIds.add(item.id)
-  );
+
+  // 將篩選出的最早批次 ID 加入 Set 中，讓畫面亮起標籤
+  Object.values(barcodeEarliest).forEach((item) => fifoIds.add(item.id));
 
   const renderCalendar = () => {
     const year = calendarDate.getFullYear();
@@ -1261,16 +1284,10 @@ export default function ExpiryManager() {
             )}
           </div>
         </div>
-
-        {/* 💡 登入頁版權宣告 */}
+        
         <div className="absolute bottom-4 sm:bottom-6 w-full text-center flex flex-col gap-1 text-white/70 text-xs font-bold tracking-widest z-10">
-          <span>
-            &copy; {new Date().getFullYear()} 向即期品說再見. All rights
-            reserved.
-          </span>
-          <span className="text-[10px] text-white/50">
-            Designed by NHS Peter Chen (Yow-Tyng Chen)
-          </span>
+          <span>&copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.</span>
+          <span className="text-[10px] text-white/50">Designed by NHS Peter Chen (Yow-Tyng Chen)</span>
         </div>
       </div>
     );
@@ -1738,17 +1755,12 @@ export default function ExpiryManager() {
                             <div className="flex items-center gap-2 text-sm font-bold text-slate-700 flex-wrap">
                               <MapPin className="w-4 h-4 text-[#0058a3]" />{" "}
                               {product.location || "未指定"}{" "}
-                              {(!product.locationUpdatedAt ||
-                                new Date() -
-                                  new Date(product.locationUpdatedAt) >
-                                  14 * 24 * 60 * 60 * 1000) &&
-                                !isActuallySoldOut && (
-                                  <span className="text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded-md font-bold">
-                                    待確認
-                                  </span>
-                                )}
-                              <span className="text-gray-300 ml-1">|</span>{" "}
-                              數量:{" "}
+                              {(!product.locationUpdatedAt || (new Date() - new Date(product.locationUpdatedAt)) > 14 * 24 * 60 * 60 * 1000) && !isActuallySoldOut && (
+                                <span className="text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded-md font-bold">
+                                  待確認
+                                </span>
+                              )}
+                              <span className="text-gray-300 ml-1">|</span> 數量:{" "}
                               <span
                                 className={
                                   isActuallySoldOut
@@ -1767,9 +1779,7 @@ export default function ExpiryManager() {
                               {!isActuallySoldOut && (
                                 <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded ml-auto flex items-center gap-1">
                                   <Clock className="w-3 h-3" />
-                                  {product.lastUpdatedBy
-                                    ? `${product.lastUpdatedBy}異動`
-                                    : "系統"}
+                                  {product.lastUpdatedBy ? `${product.lastUpdatedBy}異動` : "系統"}
                                 </span>
                               )}
                             </div>
@@ -1860,12 +1870,8 @@ export default function ExpiryManager() {
       </main>
 
       <footer className="w-full text-center py-6 text-slate-400 text-xs font-bold tracking-widest relative z-10 flex flex-col gap-1">
-        <span>
-          &copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.
-        </span>
-        <span className="text-[10px] text-slate-300">
-          Designed by NHS Peter Chen (Yow-Tyng Chen)
-        </span>
+        <span>&copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.</span>
+        <span className="text-[10px] text-slate-300">Designed by NHS Peter Chen (Yow-Tyng Chen)</span>
       </footer>
 
       {isSettingsOpen && (
