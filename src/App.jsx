@@ -382,10 +382,16 @@ export default function ExpiryManager() {
       store: auth.store,
       items: activeProducts.map((p) => ({
         name: p.name,
+        barcode: p.barcode || "",
+        category: p.category,
         expiryDate: p.expiryDate,
+        receiveDate: p.receiveDate || "",
         store: auth.store,
         quantity: p.quantity,
         location: p.location || "未指定",
+        reminderDays: p.reminderDays || 60,
+        hasSecondReminder: p.hasSecondReminder || false,
+        reminderDays2: p.reminderDays2 || 14,
       })),
     };
     try {
@@ -477,9 +483,8 @@ export default function ExpiryManager() {
     e.preventDefault();
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
 
-    // 💡 只有在「變更了地點」或是「新增商品」時，才認定是新的地點確認
     const isLocationChanged = editingId
-      ? formData.location !== products.find((p) => p.id === editingId)?.location
+      ? formData.location !== products.find(p => p.id === editingId)?.location
       : true;
 
     const dataToSave = {
@@ -490,11 +495,9 @@ export default function ExpiryManager() {
       reminderDays: Number(formData.reminderDays),
       reminderDays2: Number(formData.reminderDays2),
       updatedAt: new Date().toISOString(),
-      // 💡 精準判定地點確認時間
       locationUpdatedAt: isLocationChanged
         ? new Date().toISOString()
-        : products.find((p) => p.id === editingId)?.locationUpdatedAt ||
-          new Date().toISOString(),
+        : (products.find(p => p.id === editingId)?.locationUpdatedAt || new Date().toISOString()),
       lastUpdatedBy: currentUserRole,
     };
 
@@ -524,7 +527,6 @@ export default function ExpiryManager() {
           updatedProducts[existingIdx].quantity += dataToSave.quantity;
           updatedProducts[existingIdx].isSoldOut = false;
           updatedProducts[existingIdx].updatedAt = dataToSave.updatedAt;
-          // 合併庫存時不改變 locationUpdatedAt
           updatedProducts[existingIdx].lastUpdatedBy = dataToSave.lastUpdatedBy;
         } else {
           updatedProducts.push({ ...dataToSave, id: Date.now().toString() });
@@ -572,7 +574,6 @@ export default function ExpiryManager() {
               isSoldOut: false,
               updatedAt: dataToSave.updatedAt,
               lastUpdatedBy: dataToSave.lastUpdatedBy,
-              // 合併庫存時不更新 locationUpdatedAt
             }
           );
           updatedProducts[existingIdx] = {
@@ -620,13 +621,13 @@ export default function ExpiryManager() {
     if (isNaN(currentQty) || currentQty <= 1) return handleMarkSoldOut(product);
 
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
-    const updatedProduct = {
-      ...product,
+    const updatedProduct = { 
+      ...product, 
       quantity: currentQty - 1,
       updatedAt: new Date().toISOString(),
-      lastUpdatedBy: currentUserRole,
+      lastUpdatedBy: currentUserRole
     };
-
+    
     let newProductsList = products.map((p) =>
       p.id === product.id ? updatedProduct : p
     );
@@ -644,10 +645,10 @@ export default function ExpiryManager() {
         .doc(auth.store)
         .collection("products")
         .doc(product.id)
-        .update({
+        .update({ 
           quantity: currentQty - 1,
           updatedAt: updatedProduct.updatedAt,
-          lastUpdatedBy: updatedProduct.lastUpdatedBy,
+          lastUpdatedBy: updatedProduct.lastUpdatedBy
         });
       syncSnapshotToGoogleSheets(newProductsList);
     }
@@ -655,11 +656,11 @@ export default function ExpiryManager() {
 
   const handleMarkSoldOut = async (product) => {
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
-    const updatedProduct = {
-      ...product,
+    const updatedProduct = { 
+      ...product, 
       isSoldOut: true,
       updatedAt: new Date().toISOString(),
-      lastUpdatedBy: currentUserRole,
+      lastUpdatedBy: currentUserRole
     };
 
     let newProductsList = products.map((p) =>
@@ -679,10 +680,10 @@ export default function ExpiryManager() {
         .doc(auth.store)
         .collection("products")
         .doc(product.id)
-        .update({
+        .update({ 
           isSoldOut: true,
           updatedAt: updatedProduct.updatedAt,
-          lastUpdatedBy: updatedProduct.lastUpdatedBy,
+          lastUpdatedBy: updatedProduct.lastUpdatedBy
         });
       syncSnapshotToGoogleSheets(newProductsList);
     }
@@ -966,9 +967,8 @@ export default function ExpiryManager() {
             updatedProducts[existingIdx].quantity = mergedQty;
             updatedProducts[existingIdx].isSoldOut = mergedQty <= 0;
             updatedProducts[existingIdx].updatedAt = new Date().toISOString();
-            // 💡 匯入合併時保留舊的 locationUpdatedAt，不將匯入視為實體驗證
             updatedProducts[existingIdx].lastUpdatedBy = currentUserRole;
-
+            
             mergedExistingProducts[updatedProducts[existingIdx].id] =
               updatedProducts[existingIdx];
           } else {
@@ -1005,7 +1005,6 @@ export default function ExpiryManager() {
                 quantity: mergedExistingProducts[id].quantity,
                 isSoldOut: mergedExistingProducts[id].isSoldOut,
                 updatedAt: mergedExistingProducts[id].updatedAt,
-                // 不在 batch 裡覆寫 locationUpdatedAt
                 lastUpdatedBy: mergedExistingProducts[id].lastUpdatedBy,
               }
             );
@@ -1727,17 +1726,12 @@ export default function ExpiryManager() {
                             <div className="flex items-center gap-2 text-sm font-bold text-slate-700 flex-wrap">
                               <MapPin className="w-4 h-4 text-[#0058a3]" />{" "}
                               {product.location || "未指定"}{" "}
-                              {(!product.locationUpdatedAt ||
-                                new Date() -
-                                  new Date(product.locationUpdatedAt) >
-                                  14 * 24 * 60 * 60 * 1000) &&
-                                !isActuallySoldOut && (
-                                  <span className="text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded-md font-bold">
-                                    待確認
-                                  </span>
-                                )}
-                              <span className="text-gray-300 ml-1">|</span>{" "}
-                              數量:{" "}
+                              {(!product.locationUpdatedAt || (new Date() - new Date(product.locationUpdatedAt)) > 14 * 24 * 60 * 60 * 1000) && !isActuallySoldOut && (
+                                <span className="text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded-md font-bold">
+                                  待確認
+                                </span>
+                              )}
+                              <span className="text-gray-300 ml-1">|</span> 數量:{" "}
                               <span
                                 className={
                                   isActuallySoldOut
@@ -1756,9 +1750,7 @@ export default function ExpiryManager() {
                               {!isActuallySoldOut && (
                                 <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded ml-auto flex items-center gap-1">
                                   <Clock className="w-3 h-3" />
-                                  {product.lastUpdatedBy
-                                    ? `${product.lastUpdatedBy}異動`
-                                    : "系統"}
+                                  {product.lastUpdatedBy ? `${product.lastUpdatedBy}異動` : "系統"}
                                 </span>
                               )}
                             </div>
