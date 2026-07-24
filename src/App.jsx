@@ -413,34 +413,60 @@ export default function ExpiryManager() {
     setIsSyncing(false);
   };
 
+  // 💡 安全且高靈敏度的相機優化版
   const handleStartScanner = (target) => {
     if (!window.Html5Qrcode)
       return showToast("掃描套件載入中，請稍後", "warning");
+    
     setScannerTarget(target);
     setIsScannerOpen(true);
+    
     setTimeout(() => {
       try {
-        const html5QrCode = new window.Html5Qrcode("reader");
+        const html5QrCode = new window.Html5Qrcode("reader", {
+          // 💡 限定常見格式，讓演算法不被干擾，速度大幅提升
+          formatsToSupport: [
+            window.Html5QrcodeSupportedFormats.EAN_13,
+            window.Html5QrcodeSupportedFormats.EAN_8,
+            window.Html5QrcodeSupportedFormats.CODE_128,
+            window.Html5QrcodeSupportedFormats.UPC_A,
+            window.Html5QrcodeSupportedFormats.UPC_E,
+          ],
+        });
+        
         scannerRef.current = html5QrCode;
         const boxWidth = Math.min(window.innerWidth - 40, 300);
         const boxHeight = Math.floor(boxWidth * 0.6);
+        
         html5QrCode
           .start(
-            { facingMode: "environment" },
-            { fps: 30, qrbox: { width: boxWidth, height: boxHeight } },
+            { 
+              facingMode: "environment",
+              // 💡 安全地設定高解析度，確保畫面清晰以利辨識，取代會讓 iOS 當機的 focusMode
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            },
+            { 
+              fps: 30, 
+              qrbox: { width: boxWidth, height: boxHeight },
+              // 💡 關閉翻轉辨識，節省 50% 效能，提升掃描即時性
+              disableFlip: true 
+            },
             (decodedText) => {
               if (target === "form")
                 setFormData((prev) => ({ ...prev, barcode: decodedText }));
               else if (target === "search") setSearchQuery(decodedText);
               handleStopScanner();
             },
-            () => {}
+            () => {} // 忽略辨識過程中的小錯誤
           )
-          .catch(() => {
-            showToast("無法啟動相機", "error");
+          .catch((err) => {
+            console.error("相機啟動失敗：", err);
+            showToast("無法啟動相機，請確認瀏覽器權限", "error");
             handleStopScanner();
           });
       } catch (err) {
+        console.error("Scanner error:", err);
         handleStopScanner();
       }
     }, 300);
@@ -1723,7 +1749,6 @@ export default function ExpiryManager() {
                             : status.border
                         }`}
                       >
-                        {/* 💡 更新標籤文字為「全店最先到期」 */}
                         {isFIFO && !isActuallySoldOut && (
                           <div className="absolute -top-3 -right-2 z-[10]">
                             <span className="bg-[#0058a3] text-[#FBD914] text-[10px] font-black px-2.5 py-1 rounded-full shadow-md animate-pulse border-2 border-white">
