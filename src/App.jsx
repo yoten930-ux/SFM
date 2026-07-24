@@ -413,6 +413,7 @@ export default function ExpiryManager() {
     setIsSyncing(false);
   };
 
+  // 💡 僅加入「連續對焦」的掃描優化
   const handleStartScanner = (target) => {
     if (!window.Html5Qrcode)
       return showToast("掃描套件載入中，請稍後", "warning");
@@ -426,8 +427,14 @@ export default function ExpiryManager() {
         const boxHeight = Math.floor(boxWidth * 0.6);
         html5QrCode
           .start(
-            { facingMode: "environment" },
-            { fps: 30, qrbox: { width: boxWidth, height: boxHeight } },
+            { 
+              facingMode: "environment",
+              advanced: [{ focusMode: "continuous" }] // 💡 強制喚醒手機硬體的連續對焦
+            },
+            { 
+              fps: 30, 
+              qrbox: { width: boxWidth, height: boxHeight }
+            },
             (decodedText) => {
               if (target === "form")
                 setFormData((prev) => ({ ...prev, barcode: decodedText }));
@@ -1647,7 +1654,7 @@ export default function ExpiryManager() {
                 onClick={handleBulkDelete}
                 className="px-4 py-1.5 bg-red-600 text-white text-sm font-bold rounded-lg shadow-sm hover:bg-red-700 flex items-center gap-1"
               >
-                <Trash2 className="w-4 h-4" /> 大量刪除
+                <Trash className="w-4 h-4" /> 大量刪除
               </button>
             )}
           </div>
@@ -1723,7 +1730,6 @@ export default function ExpiryManager() {
                             : status.border
                         }`}
                       >
-                        {/* 💡 更新標籤文字為「全店最先到期」 */}
                         {isFIFO && !isActuallySoldOut && (
                           <div className="absolute -top-3 -right-2 z-[10]">
                             <span className="bg-[#0058a3] text-[#FBD914] text-[10px] font-black px-2.5 py-1 rounded-full shadow-md animate-pulse border-2 border-white">
