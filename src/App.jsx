@@ -137,7 +137,9 @@ export default function ExpiryManager() {
         await loadScript(
           "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"
         );
-        await loadScript("https://unpkg.com/html5-qrcode");
+        await loadScript(
+          "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"
+        );
         await loadScript(
           "https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"
         );
@@ -416,18 +418,35 @@ export default function ExpiryManager() {
   const handleStartScanner = (target) => {
     if (!window.Html5Qrcode)
       return showToast("掃描套件載入中，請稍後", "warning");
+
     setScannerTarget(target);
     setIsScannerOpen(true);
+
     setTimeout(() => {
       try {
-        const html5QrCode = new window.Html5Qrcode("reader");
+        const html5QrCode = new window.Html5Qrcode("reader", {
+          formatsToSupport: [
+            window.Html5QrcodeSupportedFormats.EAN_13,
+            window.Html5QrcodeSupportedFormats.EAN_8,
+            window.Html5QrcodeSupportedFormats.CODE_128,
+            window.Html5QrcodeSupportedFormats.UPC_A,
+            window.Html5QrcodeSupportedFormats.UPC_E,
+          ],
+        });
+
         scannerRef.current = html5QrCode;
         const boxWidth = Math.min(window.innerWidth - 40, 300);
         const boxHeight = Math.floor(boxWidth * 0.6);
+
         html5QrCode
           .start(
+            // 🌟 修正點：移除多餘屬性，只留下 facingMode
             { facingMode: "environment" },
-            { fps: 30, qrbox: { width: boxWidth, height: boxHeight } },
+            {
+              fps: 30,
+              qrbox: { width: boxWidth, height: boxHeight },
+              disableFlip: true,
+            },
             (decodedText) => {
               if (target === "form")
                 setFormData((prev) => ({ ...prev, barcode: decodedText }));
@@ -436,26 +455,40 @@ export default function ExpiryManager() {
             },
             () => {}
           )
-          .catch(() => {
-            showToast("無法啟動相機", "error");
+          .catch((err) => {
+            console.error("相機啟動失敗：", err);
+            showToast(`相機啟動錯誤: ${err?.message || err}`, "error");
             handleStopScanner();
           });
       } catch (err) {
+        console.error("Scanner error:", err);
+        showToast(`相機模組錯誤: ${err?.message || err}`, "error");
         handleStopScanner();
       }
     }, 300);
   };
 
   const handleStopScanner = () => {
-    setIsScannerOpen(false);
     if (scannerRef.current) {
-      scannerRef.current
-        .stop()
-        .then(() => {
-          scannerRef.current.clear();
-          scannerRef.current = null;
-        })
-        .catch(() => {});
+      try {
+        scannerRef.current
+          .stop()
+          .then(() => {
+            scannerRef.current.clear();
+            scannerRef.current = null;
+            setIsScannerOpen(false);
+          })
+          .catch((err) => {
+            console.warn("停止相機時發生錯誤：", err);
+            scannerRef.current = null;
+            setIsScannerOpen(false);
+          });
+      } catch (err) {
+        scannerRef.current = null;
+        setIsScannerOpen(false);
+      }
+    } else {
+      setIsScannerOpen(false);
     }
   };
 
@@ -484,7 +517,7 @@ export default function ExpiryManager() {
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
 
     const isLocationChanged = editingId
-      ? formData.location !== products.find(p => p.id === editingId)?.location
+      ? formData.location !== products.find((p) => p.id === editingId)?.location
       : true;
 
     const dataToSave = {
@@ -497,7 +530,8 @@ export default function ExpiryManager() {
       updatedAt: new Date().toISOString(),
       locationUpdatedAt: isLocationChanged
         ? new Date().toISOString()
-        : (products.find(p => p.id === editingId)?.locationUpdatedAt || new Date().toISOString()),
+        : products.find((p) => p.id === editingId)?.locationUpdatedAt ||
+          new Date().toISOString(),
       lastUpdatedBy: currentUserRole,
     };
 
@@ -621,13 +655,13 @@ export default function ExpiryManager() {
     if (isNaN(currentQty) || currentQty <= 1) return handleMarkSoldOut(product);
 
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
-    const updatedProduct = { 
-      ...product, 
+    const updatedProduct = {
+      ...product,
       quantity: currentQty - 1,
       updatedAt: new Date().toISOString(),
-      lastUpdatedBy: currentUserRole
+      lastUpdatedBy: currentUserRole,
     };
-    
+
     let newProductsList = products.map((p) =>
       p.id === product.id ? updatedProduct : p
     );
@@ -645,10 +679,10 @@ export default function ExpiryManager() {
         .doc(auth.store)
         .collection("products")
         .doc(product.id)
-        .update({ 
+        .update({
           quantity: currentQty - 1,
           updatedAt: updatedProduct.updatedAt,
-          lastUpdatedBy: updatedProduct.lastUpdatedBy
+          lastUpdatedBy: updatedProduct.lastUpdatedBy,
         });
       syncSnapshotToGoogleSheets(newProductsList);
     }
@@ -656,11 +690,11 @@ export default function ExpiryManager() {
 
   const handleMarkSoldOut = async (product) => {
     const currentUserRole = auth.role === "admin" ? "管理" : "一般";
-    const updatedProduct = { 
-      ...product, 
+    const updatedProduct = {
+      ...product,
       isSoldOut: true,
       updatedAt: new Date().toISOString(),
-      lastUpdatedBy: currentUserRole
+      lastUpdatedBy: currentUserRole,
     };
 
     let newProductsList = products.map((p) =>
@@ -680,10 +714,10 @@ export default function ExpiryManager() {
         .doc(auth.store)
         .collection("products")
         .doc(product.id)
-        .update({ 
+        .update({
           isSoldOut: true,
           updatedAt: updatedProduct.updatedAt,
-          lastUpdatedBy: updatedProduct.lastUpdatedBy
+          lastUpdatedBy: updatedProduct.lastUpdatedBy,
         });
       syncSnapshotToGoogleSheets(newProductsList);
     }
@@ -968,7 +1002,7 @@ export default function ExpiryManager() {
             updatedProducts[existingIdx].isSoldOut = mergedQty <= 0;
             updatedProducts[existingIdx].updatedAt = new Date().toISOString();
             updatedProducts[existingIdx].lastUpdatedBy = currentUserRole;
-            
+
             mergedExistingProducts[updatedProducts[existingIdx].id] =
               updatedProducts[existingIdx];
           } else {
@@ -1117,14 +1151,14 @@ export default function ExpiryManager() {
   };
 
   const fifoIds = new Set();
-  const barcodeEarliest = {}; 
+  const barcodeEarliest = {};
 
   products.forEach((p) => {
     if (p.isSoldOut || p.quantity <= 0) return;
     const diff = Math.ceil(
       (new Date(p.expiryDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24)
     );
-    
+
     if (diff >= 0) {
       const barcodeKey = String(p.barcode).trim().toLowerCase();
       const current = barcodeEarliest[barcodeKey];
@@ -1278,10 +1312,15 @@ export default function ExpiryManager() {
             )}
           </div>
         </div>
-        
+
         <div className="absolute bottom-4 sm:bottom-6 w-full text-center flex flex-col gap-1 text-white/70 text-xs font-bold tracking-widest z-10">
-          <span>&copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.</span>
-          <span className="text-[10px] text-white/50">Designed by NHS Peter Chen (Yow-Tyng Chen)</span>
+          <span>
+            &copy; {new Date().getFullYear()} 向即期品說再見. All rights
+            reserved.
+          </span>
+          <span className="text-[10px] text-white/50">
+            Designed by NHS Peter Chen (Yow-Tyng Chen)
+          </span>
         </div>
       </div>
     );
@@ -1723,7 +1762,6 @@ export default function ExpiryManager() {
                             : status.border
                         }`}
                       >
-                        {/* 💡 更新標籤文字為「全店最先到期」 */}
                         {isFIFO && !isActuallySoldOut && (
                           <div className="absolute -top-3 -right-2 z-[10]">
                             <span className="bg-[#0058a3] text-[#FBD914] text-[10px] font-black px-2.5 py-1 rounded-full shadow-md animate-pulse border-2 border-white">
@@ -1750,12 +1788,17 @@ export default function ExpiryManager() {
                             <div className="flex items-center gap-2 text-sm font-bold text-slate-700 flex-wrap">
                               <MapPin className="w-4 h-4 text-[#0058a3]" />{" "}
                               {product.location || "未指定"}{" "}
-                              {(!product.locationUpdatedAt || (new Date() - new Date(product.locationUpdatedAt)) > 14 * 24 * 60 * 60 * 1000) && !isActuallySoldOut && (
-                                <span className="text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded-md font-bold">
-                                  待確認
-                                </span>
-                              )}
-                              <span className="text-gray-300 ml-1">|</span> 數量:{" "}
+                              {(!product.locationUpdatedAt ||
+                                new Date() -
+                                  new Date(product.locationUpdatedAt) >
+                                  14 * 24 * 60 * 60 * 1000) &&
+                                !isActuallySoldOut && (
+                                  <span className="text-[10px] bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded-md font-bold">
+                                    待確認
+                                  </span>
+                                )}
+                              <span className="text-gray-300 ml-1">|</span>{" "}
+                              數量:{" "}
                               <span
                                 className={
                                   isActuallySoldOut
@@ -1774,7 +1817,9 @@ export default function ExpiryManager() {
                               {!isActuallySoldOut && (
                                 <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded ml-auto flex items-center gap-1">
                                   <Clock className="w-3 h-3" />
-                                  {product.lastUpdatedBy ? `${product.lastUpdatedBy}異動` : "系統"}
+                                  {product.lastUpdatedBy
+                                    ? `${product.lastUpdatedBy}異動`
+                                    : "系統"}
                                 </span>
                               )}
                             </div>
@@ -1865,8 +1910,12 @@ export default function ExpiryManager() {
       </main>
 
       <footer className="w-full text-center py-6 text-slate-400 text-xs font-bold tracking-widest relative z-10 flex flex-col gap-1">
-        <span>&copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.</span>
-        <span className="text-[10px] text-slate-300">Designed by NHS Peter Chen (Yow-Tyng Chen)</span>
+        <span>
+          &copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.
+        </span>
+        <span className="text-[10px] text-slate-300">
+          Designed by NHS Peter Chen (Yow-Tyng Chen)
+        </span>
       </footer>
 
       {isSettingsOpen && (
