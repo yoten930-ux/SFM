@@ -440,12 +440,14 @@ export default function ExpiryManager() {
 
         html5QrCode
           .start(
-            // 🌟 修正點：移除多餘屬性，只留下 facingMode
             { facingMode: "environment" },
             {
-              fps: 30,
+              fps: 15,
               qrbox: { width: boxWidth, height: boxHeight },
               disableFlip: true,
+              experimentalFeatures: {
+                useBarCodeDetectorIfSupported: true,
+              },
             },
             (decodedText) => {
               if (target === "form")
@@ -1920,7 +1922,7 @@ export default function ExpiryManager() {
 
       {isSettingsOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 border-t-8 border-[#0058a3] max-h-[90vh] overflow-y-auto">
+          <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 border-t-8 border-[#0058a3] max-h-[90vh] overflow-y-auto overflow-x-hidden">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-black flex items-center gap-2 text-[#0058a3]">
                 <Settings className="w-6 h-6" /> 店鋪管理設定
@@ -1954,7 +1956,7 @@ export default function ExpiryManager() {
                 value={newLocationInput}
                 onChange={(e) => setNewLocationInput(e.target.value)}
                 placeholder="輸入新地點名稱..."
-                className="flex-1 px-3 py-2 border-2 rounded-xl text-sm font-bold outline-none"
+                className="flex-1 px-3 py-2 border-2 rounded-xl text-sm font-bold outline-none min-w-0"
               />
               <button
                 onClick={() => {
@@ -1984,7 +1986,7 @@ export default function ExpiryManager() {
                   showToast("新增成功");
                 }}
                 disabled={!newLocationInput.trim()}
-                className="px-4 py-2 bg-[#0058a3] text-[#FBD914] font-bold rounded-xl flex items-center justify-center"
+                className="shrink-0 px-4 py-2 bg-[#0058a3] text-[#FBD914] font-bold rounded-xl flex items-center justify-center"
               >
                 新增
               </button>
@@ -2018,7 +2020,7 @@ export default function ExpiryManager() {
                             .set({ locations: updated }, { merge: true });
                       })
                     }
-                    className="p-1.5 text-red-400 flex items-center justify-center"
+                    className="p-1.5 text-red-400 flex items-center justify-center shrink-0"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -2042,14 +2044,14 @@ export default function ExpiryManager() {
                   value={newPasswordInput}
                   onChange={(e) => setNewPasswordInput(e.target.value)}
                   placeholder="新管理員密碼..."
-                  className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold outline-none"
+                  className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold outline-none min-w-0"
                 />
                 <input
                   type="text"
                   value={newStaffPwdInput}
                   onChange={(e) => setNewStaffPwdInput(e.target.value)}
                   placeholder="新一般員工密碼..."
-                  className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold outline-none"
+                  className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold outline-none min-w-0"
                 />
                 <div className="flex gap-2">
                   <button
@@ -2120,7 +2122,7 @@ export default function ExpiryManager() {
       {isCalendarOpen && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center p-4">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh]">
-            <div className="p-4 bg-[#0058a3] text-white flex justify-between items-center">
+            <div className="p-4 bg-[#0058a3] text-white flex justify-between items-center shrink-0">
               <h2 className="text-xl font-black flex items-center gap-2">
                 <CalendarDays className="w-6 h-6 text-[#FBD914]" /> 效期日曆
               </h2>
@@ -2131,7 +2133,7 @@ export default function ExpiryManager() {
                 <X className="w-6 h-6" />
               </button>
             </div>
-            <div className="p-4 flex-1 overflow-y-auto">
+            <div className="p-4 flex-1 overflow-y-auto overflow-x-hidden">
               <div className="flex justify-between items-center mb-4 px-2">
                 <button
                   onClick={() =>
@@ -2143,7 +2145,7 @@ export default function ExpiryManager() {
                       )
                     )
                   }
-                  className="p-2 bg-gray-100 rounded-full flex items-center justify-center"
+                  className="p-2 bg-gray-100 rounded-full flex items-center justify-center shrink-0"
                 >
                   <ChevronLeft className="w-5 h-5" />
                 </button>
@@ -2161,7 +2163,7 @@ export default function ExpiryManager() {
                       )
                     )
                   }
-                  className="p-2 bg-gray-100 rounded-full flex items-center justify-center"
+                  className="p-2 bg-gray-100 rounded-full flex items-center justify-center shrink-0"
                 >
                   <ChevronRight className="w-5 h-5" />
                 </button>
@@ -2212,7 +2214,7 @@ export default function ExpiryManager() {
                             <span className="font-bold text-sm text-slate-700 truncate mr-2">
                               {p.name}
                             </span>
-                            <span className="text-xs font-black px-2 py-1 bg-blue-50 text-[#0058a3] rounded">
+                            <span className="text-xs font-black px-2 py-1 bg-blue-50 text-[#0058a3] rounded shrink-0">
                               數量: {p.quantity}
                             </span>
                           </div>
@@ -2227,62 +2229,82 @@ export default function ExpiryManager() {
       )}
 
       {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[80] flex flex-col items-center justify-start pt-[8vh] p-4 overflow-y-auto">
-          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl flex flex-col overflow-hidden mb-10 border border-gray-100">
-            <div className="flex justify-between items-center p-5 border-b bg-gray-50">
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-gray-100 max-h-[90vh]">
+            <div className="flex justify-between items-center p-4 sm:p-5 border-b bg-gray-50 shrink-0">
               <h2 className="font-black text-[#0058a3] flex items-center gap-2 text-xl">
                 <Package className="w-6 h-6 text-[#FBD914]" />{" "}
                 {editingId ? "編輯商品" : "新增商品"}
               </h2>
               <button
                 onClick={closeModal}
-                className="p-2 text-gray-400 hover:bg-gray-200 rounded-full flex items-center justify-center"
+                className="p-2 text-gray-400 hover:bg-gray-200 rounded-full flex items-center justify-center shrink-0"
               >
                 <X className="w-6 h-6" />
               </button>
             </div>
-            <div className="p-5 flex-1 custom-scrollbar">
+
+            <div className="p-4 sm:p-5 flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
               <form
                 id="productForm"
                 onSubmit={handleSubmit}
-                className="space-y-5"
+                className="space-y-4 pb-6 w-full max-w-full"
               >
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-black mb-1.5 text-slate-700">
-                      商品條碼
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        name="barcode"
-                        required
-                        value={formData.barcode}
-                        onChange={handleInputChange}
-                        disabled={auth.role !== "admin" && editingId}
-                        className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none min-w-0"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleStartScanner("form")}
-                        disabled={auth.role !== "admin" && editingId}
-                        className="px-3 py-2 bg-blue-50 text-[#0058a3] rounded-xl border border-blue-200 flex items-center justify-center"
-                      >
-                        <Camera className="w-5 h-5" />
-                      </button>
-                    </div>
+                {/* 第一排：商品條碼 */}
+                <div>
+                  <label className="block text-xs font-black mb-1.5 text-slate-700">
+                    商品條碼
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      name="barcode"
+                      required
+                      value={formData.barcode}
+                      onChange={handleInputChange}
+                      disabled={auth.role !== "admin" && editingId}
+                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none min-w-0"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleStartScanner("form")}
+                      disabled={auth.role !== "admin" && editingId}
+                      className="shrink-0 px-3 py-2 bg-blue-50 text-[#0058a3] rounded-xl border border-blue-200 flex items-center justify-center"
+                    >
+                      <Camera className="w-5 h-5" />
+                    </button>
                   </div>
-                  <div>
-                    <label className="block text-xs font-black mb-1.5 text-slate-700">
+                </div>
+
+                {/* 第二排：商品名稱 */}
+                <div>
+                  <label className="block text-xs font-black mb-1.5 text-slate-700">
+                    商品名稱
+                  </label>
+                  <input
+                    type="text"
+                    name="name"
+                    required
+                    value={formData.name}
+                    onChange={handleInputChange}
+                    disabled={auth.role !== "admin" && editingId}
+                    className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none min-w-0"
+                  />
+                </div>
+
+                {/* 第三排：溫層與存放地點 */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
                       溫層選擇
                     </label>
-                    <div className="flex bg-gray-100 p-1 rounded-xl">
+                    <div className="flex bg-gray-100 p-1 rounded-xl w-full">
                       <button
                         type="button"
                         onClick={() =>
                           setFormData({ ...formData, category: "room_temp" })
                         }
-                        className={`flex-1 py-1.5 text-xs font-black rounded-lg flex items-center justify-center ${
+                        className={`flex-1 py-1.5 text-xs font-black rounded-lg flex items-center justify-center truncate ${
                           formData.category === "room_temp"
                             ? "bg-[#0058a3] text-white"
                             : "text-gray-500"
@@ -2295,7 +2317,7 @@ export default function ExpiryManager() {
                         onClick={() =>
                           setFormData({ ...formData, category: "frozen" })
                         }
-                        className={`flex-1 py-1.5 text-xs font-black rounded-lg flex items-center justify-center ${
+                        className={`flex-1 py-1.5 text-xs font-black rounded-lg flex items-center justify-center truncate ${
                           formData.category === "frozen"
                             ? "bg-[#0058a3] text-white"
                             : "text-gray-500"
@@ -2305,31 +2327,15 @@ export default function ExpiryManager() {
                       </button>
                     </div>
                   </div>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-black mb-1.5 text-slate-700">
-                      商品名稱
-                    </label>
-                    <input
-                      type="text"
-                      name="name"
-                      required
-                      value={formData.name}
-                      onChange={handleInputChange}
-                      disabled={auth.role !== "admin" && editingId}
-                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-black mb-1.5 text-slate-700">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
                       存放地點
                     </label>
                     <select
                       name="location"
                       value={formData.location}
                       onChange={handleInputChange}
-                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none"
+                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none min-w-0"
                     >
                       <option value="">請選擇...</option>
                       {locations.map((loc) => (
@@ -2340,9 +2346,11 @@ export default function ExpiryManager() {
                     </select>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-black mb-1.5 text-slate-700">
+
+                {/* 🌟 第四排：日期 (減少左右 padding、縮小字體以防被原生樣式撐破) */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
                       進貨日期
                     </label>
                     <input
@@ -2352,11 +2360,11 @@ export default function ExpiryManager() {
                       value={formData.receiveDate}
                       onChange={handleInputChange}
                       disabled={auth.role !== "admin" && editingId}
-                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none"
+                      className="w-full px-2 py-2 border-2 rounded-xl text-xs sm:text-sm tracking-tighter sm:tracking-normal font-bold focus:border-[#0058a3] outline-none min-w-0 bg-transparent"
                     />
                   </div>
-                  <div>
-                    <label className="block text-xs font-black mb-1.5 text-slate-700">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
                       有效期限
                     </label>
                     <input
@@ -2366,13 +2374,15 @@ export default function ExpiryManager() {
                       value={formData.expiryDate}
                       onChange={handleInputChange}
                       disabled={auth.role !== "admin" && editingId}
-                      className="w-full px-3 py-2 border-2 border-[#0058a3] bg-[#0058a3]/5 rounded-xl text-sm font-black focus:border-[#0058a3] outline-none"
+                      className="w-full px-2 py-2 border-2 border-[#0058a3] bg-[#0058a3]/5 rounded-xl text-xs sm:text-sm tracking-tighter sm:tracking-normal font-black focus:border-[#0058a3] outline-none min-w-0"
                     />
                   </div>
                 </div>
+
+                {/* 第五排：數量與提醒設定 */}
                 <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs font-black mb-1.5 text-slate-700">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
                       數量
                     </label>
                     <input
@@ -2382,11 +2392,11 @@ export default function ExpiryManager() {
                       required
                       value={formData.quantity}
                       onChange={handleInputChange}
-                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold bg-[#FBD914]/10 focus:border-[#0058a3] outline-none"
+                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold bg-[#FBD914]/10 focus:border-[#0058a3] outline-none min-w-0"
                     />
                   </div>
-                  <div>
-                    <label className="block text-xs font-black mb-1.5 text-slate-700">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
                       提醒(天)
                     </label>
                     <input
@@ -2397,18 +2407,18 @@ export default function ExpiryManager() {
                       value={formData.reminderDays}
                       onChange={handleInputChange}
                       disabled={auth.role !== "admin" && editingId}
-                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none"
+                      className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none min-w-0"
                     />
                   </div>
-                  <div className="bg-gray-50 border-2 rounded-xl p-2 flex flex-col justify-center">
-                    <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-700 mb-1.5 cursor-pointer">
+                  <div className="bg-gray-50 border-2 rounded-xl p-2 flex flex-col justify-center min-w-0">
+                    <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-700 mb-1.5 cursor-pointer truncate">
                       <input
                         type="checkbox"
                         name="hasSecondReminder"
                         checked={formData.hasSecondReminder}
                         onChange={handleInputChange}
                         disabled={auth.role !== "admin" && editingId}
-                        className="w-3 h-3 accent-[#0058a3]"
+                        className="w-3 h-3 accent-[#0058a3] shrink-0"
                       />{" "}
                       第二提醒
                     </label>
@@ -2421,10 +2431,10 @@ export default function ExpiryManager() {
                         value={formData.reminderDays2}
                         onChange={handleInputChange}
                         disabled={auth.role !== "admin" && editingId}
-                        className="w-full px-2 py-1 border border-gray-300 rounded-lg text-xs font-bold outline-none"
+                        className="w-full px-2 py-1 border border-gray-300 rounded-lg text-xs font-bold outline-none min-w-0"
                       />
                     ) : (
-                      <div className="text-[10px] text-gray-400 font-bold text-center">
+                      <div className="text-[10px] text-gray-400 font-bold text-center truncate">
                         未啟用
                       </div>
                     )}
@@ -2432,7 +2442,8 @@ export default function ExpiryManager() {
                 </div>
               </form>
             </div>
-            <div className="p-4 bg-gray-50 flex gap-3 justify-end rounded-b-3xl border-t">
+
+            <div className="p-4 bg-gray-50 flex gap-3 justify-end border-t shrink-0">
               <button
                 type="button"
                 onClick={closeModal}
