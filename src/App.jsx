@@ -137,10 +137,7 @@ export default function ExpiryManager() {
         await loadScript(
           "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"
         );
-        // 🌟 修正點 1：改為精準版本，穩定度更高
-        await loadScript(
-          "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"
-        );
+        await loadScript("https://unpkg.com/html5-qrcode");
         await loadScript(
           "https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"
         );
@@ -419,80 +416,46 @@ export default function ExpiryManager() {
   const handleStartScanner = (target) => {
     if (!window.Html5Qrcode)
       return showToast("掃描套件載入中，請稍後", "warning");
-    
     setScannerTarget(target);
     setIsScannerOpen(true);
-    
     setTimeout(() => {
       try {
-        const html5QrCode = new window.Html5Qrcode("reader", {
-          formatsToSupport: [
-            window.Html5QrcodeSupportedFormats.EAN_13,
-            window.Html5QrcodeSupportedFormats.EAN_8,
-            window.Html5QrcodeSupportedFormats.CODE_128,
-            window.Html5QrcodeSupportedFormats.UPC_A,
-            window.Html5QrcodeSupportedFormats.UPC_E,
-          ],
-        });
-        
+        const html5QrCode = new window.Html5Qrcode("reader");
         scannerRef.current = html5QrCode;
         const boxWidth = Math.min(window.innerWidth - 40, 300);
         const boxHeight = Math.floor(boxWidth * 0.6);
-        
         html5QrCode
           .start(
-            { 
-              facingMode: "environment",
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
-            },
-            { 
-              fps: 30, 
-              qrbox: { width: boxWidth, height: boxHeight },
-              disableFlip: true 
-            },
+            { facingMode: "environment" },
+            { fps: 30, qrbox: { width: boxWidth, height: boxHeight } },
             (decodedText) => {
               if (target === "form")
                 setFormData((prev) => ({ ...prev, barcode: decodedText }));
               else if (target === "search") setSearchQuery(decodedText);
               handleStopScanner();
             },
-            () => {} 
+            () => {}
           )
-          .catch((err) => {
-            console.error("相機啟動失敗：", err);
-            showToast("無法啟動相機，請確認瀏覽器權限", "error");
+          .catch(() => {
+            showToast("無法啟動相機", "error");
             handleStopScanner();
           });
       } catch (err) {
-        console.error("Scanner error:", err);
         handleStopScanner();
       }
     }, 300);
   };
 
-  // 🌟 修正點 2：保證先關閉硬體，再卸載 UI DOM 避免卡死
   const handleStopScanner = () => {
+    setIsScannerOpen(false);
     if (scannerRef.current) {
-      try {
-        scannerRef.current
-          .stop()
-          .then(() => {
-            scannerRef.current.clear();
-            scannerRef.current = null;
-            setIsScannerOpen(false);
-          })
-          .catch((err) => {
-            console.warn("停止相機時發生錯誤：", err);
-            scannerRef.current = null;
-            setIsScannerOpen(false);
-          });
-      } catch (err) {
-        scannerRef.current = null;
-        setIsScannerOpen(false);
-      }
-    } else {
-      setIsScannerOpen(false);
+      scannerRef.current
+        .stop()
+        .then(() => {
+          scannerRef.current.clear();
+          scannerRef.current = null;
+        })
+        .catch(() => {});
     }
   };
 
@@ -1760,6 +1723,7 @@ export default function ExpiryManager() {
                             : status.border
                         }`}
                       >
+                        {/* 💡 更新標籤文字為「全店最先到期」 */}
                         {isFIFO && !isActuallySoldOut && (
                           <div className="absolute -top-3 -right-2 z-[10]">
                             <span className="bg-[#0058a3] text-[#FBD914] text-[10px] font-black px-2.5 py-1 rounded-full shadow-md animate-pulse border-2 border-white">
