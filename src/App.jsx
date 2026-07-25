@@ -137,7 +137,10 @@ export default function ExpiryManager() {
         await loadScript(
           "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"
         );
-        await loadScript("https://unpkg.com/html5-qrcode");
+        // 🌟 修正點 1：改為精準版本，穩定度更高
+        await loadScript(
+          "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"
+        );
         await loadScript(
           "https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"
         );
@@ -413,7 +416,6 @@ export default function ExpiryManager() {
     setIsSyncing(false);
   };
 
-  // 💡 安全且高靈敏度的相機優化版
   const handleStartScanner = (target) => {
     if (!window.Html5Qrcode)
       return showToast("掃描套件載入中，請稍後", "warning");
@@ -424,7 +426,6 @@ export default function ExpiryManager() {
     setTimeout(() => {
       try {
         const html5QrCode = new window.Html5Qrcode("reader", {
-          // 💡 限定常見格式，讓演算法不被干擾，速度大幅提升
           formatsToSupport: [
             window.Html5QrcodeSupportedFormats.EAN_13,
             window.Html5QrcodeSupportedFormats.EAN_8,
@@ -442,14 +443,12 @@ export default function ExpiryManager() {
           .start(
             { 
               facingMode: "environment",
-              // 💡 安全地設定高解析度，確保畫面清晰以利辨識，取代會讓 iOS 當機的 focusMode
               width: { ideal: 1280 },
               height: { ideal: 720 }
             },
             { 
               fps: 30, 
               qrbox: { width: boxWidth, height: boxHeight },
-              // 💡 關閉翻轉辨識，節省 50% 效能，提升掃描即時性
               disableFlip: true 
             },
             (decodedText) => {
@@ -458,7 +457,7 @@ export default function ExpiryManager() {
               else if (target === "search") setSearchQuery(decodedText);
               handleStopScanner();
             },
-            () => {} // 忽略辨識過程中的小錯誤
+            () => {} 
           )
           .catch((err) => {
             console.error("相機啟動失敗：", err);
@@ -472,16 +471,28 @@ export default function ExpiryManager() {
     }, 300);
   };
 
+  // 🌟 修正點 2：保證先關閉硬體，再卸載 UI DOM 避免卡死
   const handleStopScanner = () => {
-    setIsScannerOpen(false);
     if (scannerRef.current) {
-      scannerRef.current
-        .stop()
-        .then(() => {
-          scannerRef.current.clear();
-          scannerRef.current = null;
-        })
-        .catch(() => {});
+      try {
+        scannerRef.current
+          .stop()
+          .then(() => {
+            scannerRef.current.clear();
+            scannerRef.current = null;
+            setIsScannerOpen(false);
+          })
+          .catch((err) => {
+            console.warn("停止相機時發生錯誤：", err);
+            scannerRef.current = null;
+            setIsScannerOpen(false);
+          });
+      } catch (err) {
+        scannerRef.current = null;
+        setIsScannerOpen(false);
+      }
+    } else {
+      setIsScannerOpen(false);
     }
   };
 
