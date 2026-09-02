@@ -100,6 +100,10 @@ export default function ExpiryManager() {
   const [newPasswordInput, setNewPasswordInput] = useState("");
   const [newStaffPwdInput, setNewStaffPwdInput] = useState("");
   const [isEditingPassword, setIsEditingPassword] = useState(false);
+  
+  // 🌟 新增：管理地點編輯的狀態
+  const [editingLocationIndex, setEditingLocationIndex] = useState(null);
+  const [editingLocationValue, setEditingLocationValue] = useState("");
 
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [calendarDate, setCalendarDate] = useState(new Date());
@@ -111,7 +115,7 @@ export default function ExpiryManager() {
   const itemsPerPage = 15;
   const [selectedIds, setSelectedIds] = useState(new Set());
 
-  // 🌟 新增：分貨(拆分)的狀態管理
+  // 🌟 分貨(拆分)的狀態管理
   const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
   const [splitData, setSplitData] = useState({ sourceId: null, qty: 1, location: "" });
 
@@ -516,6 +520,83 @@ export default function ExpiryManager() {
     setIsModalOpen(false);
     setEditingId(null);
     setFormData(defaultForm);
+  };
+
+  // 🌟 處理地點修改儲存
+  const handleEditLocationSubmit = async (index, oldLoc, newLocStr) => {
+    const newLoc = newLocStr.trim();
+    if (!newLoc) {
+      showToast("地點名稱不能為空", "error");
+      return;
+    }
+    if (newLoc === oldLoc) {
+      setEditingLocationIndex(null);
+      return;
+    }
+    if (locations.includes(newLoc)) {
+      showToast("該地點名稱已存在", "error");
+      return;
+    }
+
+    const updatedLocations = [...locations];
+    updatedLocations[index] = newLoc;
+
+    try {
+      if (useLocalMode) {
+        setLocations(updatedLocations);
+        localStorage.setItem(
+          `expiry_manager_settings_${auth.store}`,
+          JSON.stringify({
+            locations: updatedLocations,
+            customPassword: storePasswords[auth.store],
+            staffPassword: staffPasswords[auth.store],
+          })
+        );
+
+        // 同步更新所有擁有舊地點的商品
+        let changed = false;
+        const updatedProducts = products.map((p) => {
+          if (p.location === oldLoc) {
+            changed = true;
+            return { ...p, location: newLoc };
+          }
+          return p;
+        });
+
+        if (changed) {
+          setProducts(updatedProducts);
+          localStorage.setItem(`expiry_products_${auth.store}`, JSON.stringify(updatedProducts));
+          syncSnapshotToGoogleSheets(updatedProducts);
+        }
+      } else if (db && auth.store) {
+        const batch = db.batch();
+        batch.set(
+          db.collection("stores").doc(auth.store).collection("settings").doc("config"),
+          { locations: updatedLocations },
+          { merge: true }
+        );
+
+        const productsToUpdate = products.filter((p) => p.location === oldLoc);
+        productsToUpdate.forEach((p) => {
+          batch.update(db.collection("stores").doc(auth.store).collection("products").doc(p.id), { location: newLoc });
+        });
+
+        await batch.commit();
+
+        setLocations(updatedLocations);
+
+        if (productsToUpdate.length > 0) {
+          const updatedProducts = products.map((p) => (p.location === oldLoc ? { ...p, location: newLoc } : p));
+          setProducts(updatedProducts);
+          syncSnapshotToGoogleSheets(updatedProducts);
+        }
+      }
+      setEditingLocationIndex(null);
+      showToast("地點已更新，包含該地點的庫存已同步修正", "success");
+    } catch (err) {
+      console.error("更新地點失敗:", err);
+      showToast("更新地點失敗", "error");
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -2132,38 +2213,80 @@ export default function ExpiryManager() {
               </button>
             </div>
             <div className="max-h-[20vh] overflow-y-auto space-y-2 mb-6">
-              {locations.map((loc) => (
+              {locations.map((loc, idx) => (
                 <div
-                  key={loc}
+                  key={idx}
                   className="flex justify-between items-center bg-slate-50 p-2.5 rounded-xl border"
                 >
-                  <span className="text-sm font-bold">{loc}</span>
-                  <button
-                    onClick={() =>
-                      confirmAction(`刪除地點 ${loc}?`, () => {
-                        const updated = locations.filter((l) => l !== loc);
-                        setLocations(updated);
-                        if (useLocalMode)
-                          localStorage.setItem(
-                            `expiry_manager_settings_${auth.store}`,
-                            JSON.stringify({
-                              locations: updated,
-                              customPassword: storePasswords[auth.store],
-                              staffPassword: staffPasswords[auth.store],
+                  {editingLocationIndex === idx ? (
+                    <div className="flex flex-1 gap-2 items-center">
+                      <input
+                        value={editingLocationValue}
+                        onChange={(e) => setEditingLocationValue(e.target.value)}
+                        className="flex-1 px-2 py-1 border border-gray-300 rounded-lg text-sm font-bold outline-none focus:border-[#0058a3]"
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleEditLocationSubmit(idx, loc, editingLocationValue);
+                          if (e.key === 'Escape') setEditingLocationIndex(null);
+                        }}
+                      />
+                      <div className="flex gap-1 shrink-0">
+                        <button
+                          onClick={() => handleEditLocationSubmit(idx, loc, editingLocationValue)}
+                          className="p-1.5 text-emerald-500 hover:bg-emerald-100 rounded-lg flex items-center justify-center"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setEditingLocationIndex(null)}
+                          className="p-1.5 text-gray-400 hover:bg-gray-200 rounded-lg flex items-center justify-center"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="text-sm font-bold truncate">{loc}</span>
+                      <div className="flex gap-1 shrink-0">
+                        <button
+                          onClick={() => {
+                            setEditingLocationIndex(idx);
+                            setEditingLocationValue(loc);
+                          }}
+                          className="p-1.5 text-[#0058a3] hover:bg-blue-100 rounded-lg flex items-center justify-center"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() =>
+                            confirmAction(`刪除地點 ${loc}?`, () => {
+                              const updated = locations.filter((l) => l !== loc);
+                              setLocations(updated);
+                              if (useLocalMode)
+                                localStorage.setItem(
+                                  `expiry_manager_settings_${auth.store}`,
+                                  JSON.stringify({
+                                    locations: updated,
+                                    customPassword: storePasswords[auth.store],
+                                    staffPassword: staffPasswords[auth.store],
+                                  })
+                                );
+                              else
+                                db.collection("stores")
+                                  .doc(auth.store)
+                                  .collection("settings")
+                                  .doc("config")
+                                  .set({ locations: updated }, { merge: true });
                             })
-                          );
-                        else
-                          db.collection("stores")
-                            .doc(auth.store)
-                            .collection("settings")
-                            .doc("config")
-                            .set({ locations: updated }, { merge: true });
-                      })
-                    }
-                    className="p-1.5 text-red-400 flex items-center justify-center shrink-0"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                          }
+                          className="p-1.5 text-red-400 hover:bg-red-100 rounded-lg flex items-center justify-center"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
