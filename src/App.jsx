@@ -111,6 +111,10 @@ export default function ExpiryManager() {
   const itemsPerPage = 15;
   const [selectedIds, setSelectedIds] = useState(new Set());
 
+  // 🌟 新增：分貨(拆分)的狀態管理
+  const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
+  const [splitData, setSplitData] = useState({ sourceId: null, qty: 1, location: "" });
+
   const defaultForm = {
     barcode: "",
     name: "",
@@ -553,11 +557,11 @@ export default function ExpiryManager() {
       } else {
         const existingIdx = updatedProducts.findIndex(
           (p) =>
-            String(p.barcode).toLowerCase() ===
-              String(dataToSave.barcode).toLowerCase() &&
+            String(p.barcode).toLowerCase() === String(dataToSave.barcode).toLowerCase() &&
             p.name === dataToSave.name &&
             p.expiryDate === dataToSave.expiryDate &&
-            p.location === dataToSave.location
+            p.location === dataToSave.location &&
+            p.receiveDate === dataToSave.receiveDate // 💡 修正2：合併時比對進貨日期
         );
         if (existingIdx >= 0) {
           updatedProducts[existingIdx].quantity += dataToSave.quantity;
@@ -591,11 +595,11 @@ export default function ExpiryManager() {
       } else {
         const existingIdx = products.findIndex(
           (p) =>
-            String(p.barcode).toLowerCase() ===
-              String(dataToSave.barcode).toLowerCase() &&
+            String(p.barcode).toLowerCase() === String(dataToSave.barcode).toLowerCase() &&
             p.name === dataToSave.name &&
             p.expiryDate === dataToSave.expiryDate &&
-            p.location === dataToSave.location
+            p.location === dataToSave.location &&
+            p.receiveDate === dataToSave.receiveDate // 💡 修正2：合併時比對進貨日期
         );
         if (existingIdx >= 0) {
           const newQty = products[existingIdx].quantity + dataToSave.quantity;
@@ -650,6 +654,123 @@ export default function ExpiryManager() {
     }
     showToast(editingId ? "修改成功" : "新增成功", "success");
     closeModal();
+  };
+
+  const handleSplitSubmit = async (e) => {
+    e.preventDefault();
+    const source = products.find((p) => p.id === splitData.sourceId);
+    if (!source) return;
+
+    const moveQty = Number(splitData.qty);
+    if (isNaN(moveQty) || moveQty <= 0 || moveQty >= source.quantity) {
+      showToast("拆分數量必須大於 0 且小於原本總數", "error");
+      return;
+    }
+    if (!splitData.location) {
+      showToast("請選擇新地點", "error");
+      return;
+    }
+    if (splitData.location === source.location) {
+      showToast("新地點不能與原地點相同", "error");
+      return;
+    }
+
+    const currentUserRole = auth.role === "admin" ? "管理" : "一般";
+    const nowStr = new Date().toISOString();
+
+    const updatedSource = {
+      ...source,
+      quantity: source.quantity - moveQty,
+      updatedAt: nowStr,
+      lastUpdatedBy: currentUserRole,
+    };
+
+    let updatedProducts = products.map((p) =>
+      p.id === source.id ? updatedSource : p
+    );
+
+    const existingDestIdx = updatedProducts.findIndex(
+      (p) =>
+        String(p.barcode).toLowerCase() === String(source.barcode).toLowerCase() &&
+        p.name === source.name &&
+        p.expiryDate === source.expiryDate &&
+        p.location === splitData.location &&
+        p.receiveDate === source.receiveDate // 💡 修正 2：確保同一批次的進貨日也相同才合併
+    );
+
+    let destIdToUpdate = null;
+    let newDestProductData = null;
+    let newDestProductWithId = null;
+    let newDestQty = moveQty;
+
+    if (existingDestIdx >= 0) {
+      destIdToUpdate = updatedProducts[existingDestIdx].id;
+      newDestQty = updatedProducts[existingDestIdx].quantity + moveQty;
+      updatedProducts[existingDestIdx] = {
+        ...updatedProducts[existingDestIdx],
+        quantity: newDestQty,
+        isSoldOut: false,
+        updatedAt: nowStr,
+        lastUpdatedBy: currentUserRole,
+      };
+    } else {
+      // 💡 修正 1：準備乾淨的 payload，不含冗餘的 id
+      newDestProductData = { ...source };
+      delete newDestProductData.id; 
+      newDestProductData.quantity = moveQty;
+      newDestProductData.location = splitData.location;
+      newDestProductData.updatedAt = nowStr;
+      newDestProductData.locationUpdatedAt = nowStr; 
+      newDestProductData.lastUpdatedBy = currentUserRole;
+
+      // 產生正確的 ID 供本地陣列使用
+      let generatedId = useLocalMode 
+          ? Date.now().toString() + Math.random().toString(36).substr(2, 5) 
+          : db.collection("stores").doc().id;
+      
+      newDestProductWithId = { ...newDestProductData, id: generatedId };
+      updatedProducts.push(newDestProductWithId);
+    }
+
+    if (useLocalMode) {
+      setProducts(updatedProducts);
+      localStorage.setItem(`expiry_products_${auth.store}`, JSON.stringify(updatedProducts));
+      syncSnapshotToGoogleSheets(updatedProducts);
+    } else if (db && auth.store) {
+      const batch = db.batch();
+      
+      batch.update(
+        db.collection("stores").doc(auth.store).collection("products").doc(source.id),
+        {
+          quantity: updatedSource.quantity,
+          updatedAt: nowStr,
+          lastUpdatedBy: currentUserRole,
+        }
+      );
+
+      if (destIdToUpdate) {
+        batch.update(
+          db.collection("stores").doc(auth.store).collection("products").doc(destIdToUpdate),
+          {
+            quantity: newDestQty,
+            isSoldOut: false,
+            updatedAt: nowStr,
+            lastUpdatedBy: currentUserRole,
+          }
+        );
+      } else if (newDestProductData) {
+        batch.set(
+          db.collection("stores").doc(auth.store).collection("products").doc(newDestProductWithId.id),
+          newDestProductData
+        );
+      }
+      await batch.commit();
+      setProducts(updatedProducts);
+      syncSnapshotToGoogleSheets(updatedProducts);
+    }
+
+    showToast("分貨成功！已分配至新地點", "success");
+    setIsSplitModalOpen(false);
   };
 
   const handleQuantityMinus = async (product) => {
@@ -990,11 +1111,11 @@ export default function ExpiryManager() {
         newProducts.forEach((newProd) => {
           const existingIdx = updatedProducts.findIndex(
             (p) =>
-              String(p.barcode).toLowerCase() ===
-                String(newProd.barcode).toLowerCase() &&
+              String(p.barcode).toLowerCase() === String(newProd.barcode).toLowerCase() &&
               p.name === newProd.name &&
               p.expiryDate === newProd.expiryDate &&
-              p.location === newProd.location
+              p.location === newProd.location &&
+              p.receiveDate === newProd.receiveDate // 💡 修正 2：確保同一批次的進貨日也相同才合併
           );
           if (existingIdx >= 0) {
             const mergedQty =
@@ -1170,31 +1291,36 @@ export default function ExpiryManager() {
 
       if (!current) {
         barcodeEarliest[barcodeKey] = {
-          id: p.id,
+          ids: [p.id], // 💡 修正 3：改為陣列儲存
           expiryTime: pExpiryTime,
           receiveTime: pReceiveTime,
         };
       } else {
         if (pExpiryTime < current.expiryTime) {
           barcodeEarliest[barcodeKey] = {
-            id: p.id,
+            ids: [p.id],
             expiryTime: pExpiryTime,
             receiveTime: pReceiveTime,
           };
         } else if (pExpiryTime === current.expiryTime) {
           if (pReceiveTime < current.receiveTime) {
             barcodeEarliest[barcodeKey] = {
-              id: p.id,
+              ids: [p.id],
               expiryTime: pExpiryTime,
               receiveTime: pReceiveTime,
             };
+          } else if (pReceiveTime === current.receiveTime) {
+            // 💡 修正 3：當效期與進貨日期完全相同時，兩筆皆判定為第一名
+            current.ids.push(p.id);
           }
         }
       }
     }
   });
 
-  Object.values(barcodeEarliest).forEach((item) => fifoIds.add(item.id));
+  Object.values(barcodeEarliest).forEach((item) => {
+    item.ids.forEach(id => fifoIds.add(id));
+  });
 
   const renderCalendar = () => {
     const year = calendarDate.getFullYear();
@@ -1861,6 +1987,19 @@ export default function ExpiryManager() {
                                 >
                                   賣完
                                 </button>
+                                {/* 🌟 顯示分貨按鈕 (數量>1才顯示) */}
+                                {product.quantity > 1 && (
+                                  <button
+                                    onClick={() => {
+                                      setSplitData({ sourceId: product.id, qty: 1, location: "" });
+                                      setIsSplitModalOpen(true);
+                                    }}
+                                    className="p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg text-xs font-bold flex items-center justify-center"
+                                    title="拆分庫存到其他地點"
+                                  >
+                                    分貨
+                                  </button>
+                                )}
                               </>
                             )}
                             <button
@@ -1913,7 +2052,8 @@ export default function ExpiryManager() {
 
       <footer className="w-full text-center py-6 text-slate-400 text-xs font-bold tracking-widest relative z-10 flex flex-col gap-1">
         <span>
-          &copy; {new Date().getFullYear()} 向即期品說再見. All rights reserved.
+          &copy; {new Date().getFullYear()} 向即期品說再見. All rights
+          reserved.
         </span>
         <span className="text-[10px] text-slate-300">
           Designed by NHS Peter Chen (Yow-Tyng Chen)
@@ -2228,9 +2368,102 @@ export default function ExpiryManager() {
         </div>
       )}
 
+      {/* 🌟 1. 拆分 (分貨) 的彈出視窗 */}
+      {isSplitModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[90] flex flex-col items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-gray-100">
+            <div className="flex justify-between items-center p-4 border-b bg-indigo-50 shrink-0">
+              <h2 className="font-black text-indigo-800 flex items-center gap-2 text-lg">
+                📦 拆分庫存 (分貨)
+              </h2>
+              <button
+                onClick={() => setIsSplitModalOpen(false)}
+                className="p-2 text-gray-400 hover:bg-indigo-200 hover:text-indigo-800 rounded-full flex items-center justify-center shrink-0 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-5 flex-1">
+              {(() => {
+                const source = products.find((p) => p.id === splitData.sourceId);
+                if (!source) return null;
+                return (
+                  <form
+                    id="splitForm"
+                    onSubmit={handleSplitSubmit}
+                    className="space-y-4"
+                  >
+                    <div className="bg-gray-50 p-3 rounded-xl border mb-2">
+                      <div className="text-sm font-bold text-slate-700 truncate">{source.name}</div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        原地點：{source.location || "未指定"} | 原數量：{source.quantity}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-black mb-1.5 text-slate-700">
+                        要移出多少數量？
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max={source.quantity - 1} // 不能移出全部，否則請直接用編輯改地點
+                        required
+                        value={splitData.qty}
+                        onChange={(e) => setSplitData({ ...splitData, qty: e.target.value })}
+                        className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-black mb-1.5 text-slate-700">
+                        移到哪個新地點？
+                      </label>
+                      <select
+                        required
+                        value={splitData.location}
+                        onChange={(e) => setSplitData({ ...splitData, location: e.target.value })}
+                        className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none"
+                      >
+                        <option value="">請選擇新地點...</option>
+                        {locations.map((loc) => (
+                          <option key={loc} value={loc} disabled={loc === source.location}>
+                            {loc} {loc === source.location ? "(原地點)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </form>
+                );
+              })()}
+            </div>
+            
+            <div className="p-4 bg-gray-50 flex gap-3 justify-end border-t shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsSplitModalOpen(false)}
+                className="px-5 py-2.5 text-slate-600 bg-white border-2 font-black rounded-xl text-sm flex items-center justify-center"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                form="splitForm"
+                className="flex-1 px-5 py-2.5 bg-[#0058a3] text-[#FBD914] font-black rounded-xl shadow-md flex justify-center items-center gap-2 hover:bg-[#004a89] transition"
+              >
+                確認分貨
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 修改的地方在這裡：新增/編輯商品的彈出視窗結構優化 */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 sm:p-6">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-gray-100 max-h-[90vh]">
+            
             <div className="flex justify-between items-center p-4 sm:p-5 border-b bg-gray-50 shrink-0">
               <h2 className="font-black text-[#0058a3] flex items-center gap-2 text-xl">
                 <Package className="w-6 h-6 text-[#FBD914]" />{" "}
@@ -2243,7 +2476,7 @@ export default function ExpiryManager() {
                 <X className="w-6 h-6" />
               </button>
             </div>
-
+            
             <div className="p-4 sm:p-5 flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
               <form
                 id="productForm"
@@ -2251,48 +2484,48 @@ export default function ExpiryManager() {
                 className="space-y-4 pb-6 w-full max-w-full"
               >
                 {/* 第一排：商品條碼 */}
-                <div>
-                  <label className="block text-xs font-black mb-1.5 text-slate-700">
-                    商品條碼
-                  </label>
-                  <div className="flex gap-2">
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-black mb-1.5 text-slate-700">
+                      商品條碼
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        name="barcode"
+                        required
+                        value={formData.barcode}
+                        onChange={handleInputChange}
+                        disabled={auth.role !== "admin" && editingId}
+                        className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none min-w-0"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleStartScanner("form")}
+                        disabled={auth.role !== "admin" && editingId}
+                        className="shrink-0 px-3 py-2 bg-blue-50 text-[#0058a3] rounded-xl border border-blue-200 flex items-center justify-center"
+                      >
+                        <Camera className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-black mb-1.5 text-slate-700">
+                      商品名稱
+                    </label>
                     <input
                       type="text"
-                      name="barcode"
+                      name="name"
                       required
-                      value={formData.barcode}
+                      value={formData.name}
                       onChange={handleInputChange}
                       disabled={auth.role !== "admin" && editingId}
                       className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none min-w-0"
                     />
-                    <button
-                      type="button"
-                      onClick={() => handleStartScanner("form")}
-                      disabled={auth.role !== "admin" && editingId}
-                      className="shrink-0 px-3 py-2 bg-blue-50 text-[#0058a3] rounded-xl border border-blue-200 flex items-center justify-center"
-                    >
-                      <Camera className="w-5 h-5" />
-                    </button>
                   </div>
                 </div>
 
-                {/* 第二排：商品名稱 */}
-                <div>
-                  <label className="block text-xs font-black mb-1.5 text-slate-700">
-                    商品名稱
-                  </label>
-                  <input
-                    type="text"
-                    name="name"
-                    required
-                    value={formData.name}
-                    onChange={handleInputChange}
-                    disabled={auth.role !== "admin" && editingId}
-                    className="w-full px-3 py-2 border-2 rounded-xl text-sm font-bold focus:border-[#0058a3] outline-none min-w-0"
-                  />
-                </div>
-
-                {/* 第三排：溫層與存放地點 */}
+                {/* 第二排：溫層與存放地點 (對齊) */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="min-w-0">
                     <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
@@ -2347,7 +2580,7 @@ export default function ExpiryManager() {
                   </div>
                 </div>
 
-                {/* 🌟 第四排：日期 (減少左右 padding、縮小字體以防被原生樣式撐破) */}
+                {/* 第三排：進貨日期與有效期限 (對齊上方格子寬度) */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="min-w-0">
                     <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
@@ -2379,7 +2612,7 @@ export default function ExpiryManager() {
                   </div>
                 </div>
 
-                {/* 第五排：數量與提醒設定 */}
+                {/* 第四排：數量與提醒設定 */}
                 <div className="grid grid-cols-3 gap-3">
                   <div className="min-w-0">
                     <label className="block text-xs font-black mb-1.5 text-slate-700 truncate">
@@ -2442,7 +2675,7 @@ export default function ExpiryManager() {
                 </div>
               </form>
             </div>
-
+            
             <div className="p-4 bg-gray-50 flex gap-3 justify-end border-t shrink-0">
               <button
                 type="button"
@@ -2459,6 +2692,7 @@ export default function ExpiryManager() {
                 <Save className="w-5 h-5" /> 儲存資料
               </button>
             </div>
+
           </div>
         </div>
       )}
