@@ -2215,7 +2215,7 @@ export default function ExpiryManager() {
             <div className="max-h-[20vh] overflow-y-auto space-y-2 mb-6">
               {locations.map((loc, idx) => (
                 <div
-                  key={idx}
+                  key={loc}
                   className="flex justify-between items-center bg-slate-50 p-2.5 rounded-xl border"
                 >
                   {editingLocationIndex === idx ? (
